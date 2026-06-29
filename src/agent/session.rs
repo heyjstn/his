@@ -1,4 +1,4 @@
-use crate::agent::provider::{FromProviderMessage, CodexMessage, PiMessage, Provider, ProviderEnum};
+use super::provider::{CodexMessage, FromProviderMessage, PiMessage, Provider, ProviderEnum};
 use serde::Deserialize;
 
 #[derive(Deserialize, Debug)]
@@ -19,7 +19,7 @@ pub struct SessionMessage {
 }
 
 pub fn list_sessions(provider: &Provider) -> Vec<Session> {
-    let file_paths = crate::agent::provider::walk_dir(&provider.dir).unwrap();
+    let file_paths = super::provider::walk_dir(&provider.dir).unwrap();
     let sessions: Vec<Session> = file_paths
         .iter()
         .map(|path| {

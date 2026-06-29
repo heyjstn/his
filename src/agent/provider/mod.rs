@@ -1,3 +1,6 @@
+pub mod codex;
+pub mod pi;
+
 use crate::RuntimeErr;
 use crate::agent::session::{
     Session, list_sessions as list_sessions_impl, load_session as load_session_impl,
@@ -7,6 +10,9 @@ use serde::de::DeserializeOwned;
 use std::fs;
 use std::fs::DirEntry;
 use std::io;
+
+pub use codex::CodexMessage;
+pub use pi::PiMessage;
 
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "lowercase")]
@@ -65,40 +71,6 @@ pub struct AgentMessage {
 }
 
 impl FromProviderMessage for AgentMessage {}
-
-#[derive(Deserialize, Debug)]
-pub struct PiMessage {
-    #[serde(rename = "type")]
-    pub typ: String,
-    pub version: Option<usize>,
-    pub id: String,
-    pub timestamp: String,
-    pub cwd: Option<String>,
-}
-
-impl FromProviderMessage for PiMessage {}
-
-impl From<PiMessage> for AgentMessage {
-    fn from(value: PiMessage) -> Self {
-        AgentMessage {
-            typ: value.typ,
-            id: value.id,
-            timestamp: value.timestamp,
-            cwd: value.cwd,
-        }
-    }
-}
-
-#[derive(Deserialize, Debug)]
-pub struct CodexMessage {}
-
-impl FromProviderMessage for CodexMessage {}
-
-impl From<CodexMessage> for AgentMessage {
-    fn from(value: CodexMessage) -> Self {
-        todo!()
-    }
-}
 
 impl Provider {
     pub fn list_sessions(&self) -> Vec<Session> {
