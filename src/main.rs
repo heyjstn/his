@@ -1,9 +1,10 @@
 pub mod agent;
+pub mod cli;
 
+use crate::cli::run;
 use agent::provider::Provider;
 use agent::session::Session;
 use serde::Deserialize;
-use std::env::args_os;
 use std::fs;
 use std::process::ExitCode;
 
@@ -15,35 +16,10 @@ pub enum RuntimeErr {
     Generic(String),
 }
 
-#[derive(PartialEq)]
-enum Command {
-    ListSession,
-    Version,
-}
-
-const DEFAULT_CONFIG_DIR: &str = "$HOME/.his";
+pub const DEFAULT_CONFIG_DIR: &str = "$HOME/.his";
 
 fn main() -> Result<ExitCode, RuntimeErr> {
-    let mut args = args_os().skip(1).peekable();
-
-    let cmd = args
-        .find_map(|arg| {
-            Some(match arg.to_str()? {
-                "ls" => Command::ListSession,
-                "version" => Command::Version,
-                _ => return None,
-            })
-        })
-        .ok_or(RuntimeErr::UnsupportedCommand)?;
-
-    let config = Config::new(DEFAULT_CONFIG_DIR.to_string())?;
-
-    match cmd {
-        Command::ListSession => list_sessions(&config)?,
-        Command::Version => todo!(),
-    }
-
-    Ok(ExitCode::SUCCESS)
+    Ok(run())
 }
 
 #[cfg(test)]
@@ -68,7 +44,8 @@ mod tests {
 }
 
 fn list_sessions(config: &Config) -> Result<(), RuntimeErr> {
-    todo!()
+    println!("{:?}", config.list_sessions());
+    Ok(())
 }
 
 #[derive(Deserialize, Debug)]
@@ -88,8 +65,8 @@ impl Config {
         Ok(config)
     }
 
-    fn list_sessions(self) -> Vec<Session> {
-        match self.providers {
+    fn list_sessions(&self) -> Vec<Session> {
+        match self.providers.as_ref() {
             Some(providers) => {
                 let mut sessions: Vec<Session> = providers
                     .iter()
