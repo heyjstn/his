@@ -1,10 +1,12 @@
 use crate::RuntimeErr;
-use serde::de::DeserializeOwned;
+use crate::agent::session::{
+    Session, list_sessions as list_sessions_impl, load_session as load_session_impl,
+};
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 use std::fs;
 use std::fs::DirEntry;
 use std::io;
-use std::str::FromStr;
 
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "lowercase")]
@@ -13,50 +15,56 @@ pub enum ProviderEnum {
     Pi,
 }
 
+impl ProviderEnum {
+    pub(crate) fn clone(&self) -> ProviderEnum {
+        match self {
+            &ProviderEnum::Pi => ProviderEnum::Pi,
+            &ProviderEnum::Codex => ProviderEnum::Codex,
+        }
+    }
+}
+
 #[derive(Deserialize, Debug)]
 pub struct Provider {
     pub name: ProviderEnum,
     pub dir: String,
 }
 
-#[derive(Deserialize, Debug)]
-pub struct Session {
-    pub id: String,
-    pub provider: ProviderEnum,
-    pub ts: String,
-    pub cwd: String,
-    pub messages: Option<Vec<SessionMessage>>,
-}
-
-#[derive(Deserialize, Debug)]
-pub struct SessionMessage {
-    pub id: String,
-    pub provider: ProviderEnum,
-    pub ts: String,
-    pub text: String,
-}
-
-pub trait AgentMessage: Sized + DeserializeOwned {
-    fn from_message_str(s: &str) -> Result<Self, RuntimeErr> {
-        serde_json::from_str(s).map_err(|err| RuntimeErr::Generic(err.to_string()))
+pub trait FromProviderMessage: Sized + DeserializeOwned {
+    fn from_message_str(s: &str) -> Result<AgentMessage, RuntimeErr>
+    where
+        AgentMessage: From<Self>,
+    {
+        let original_data =
+            serde_json::from_str::<Self>(s).map_err(|err| RuntimeErr::Generic(err.to_string()))?;
+        Ok(original_data.into())
     }
 
     fn read_to_string(path: &str) -> Result<String, RuntimeErr> {
         fs::read_to_string(path).map_err(|err| RuntimeErr::Generic(err.to_string()))
     }
 
-    fn parse_one(path: &str) -> Result<Self, RuntimeErr> {
-        let file = Self::read_to_string(path)?;
-        Ok(Self::from_message_str(&file)?)
-    }
-
-    fn parse_vec(path: &str) -> Result<Vec<Self>, RuntimeErr> {
+    fn parse_vec(path: &str) -> Result<Vec<AgentMessage>, RuntimeErr>
+    where
+        AgentMessage: From<Self>,
+    {
         let file = Self::read_to_string(path)?;
         file.lines()
             .map(|line| Self::from_message_str(line))
             .collect()
     }
 }
+
+#[derive(Deserialize, Debug)]
+pub struct AgentMessage {
+    #[serde(rename = "type")]
+    pub typ: String,
+    pub id: String,
+    pub timestamp: String,
+    pub cwd: Option<String>,
+}
+
+impl FromProviderMessage for AgentMessage {}
 
 #[derive(Deserialize, Debug)]
 pub struct PiMessage {
@@ -68,57 +76,52 @@ pub struct PiMessage {
     pub cwd: Option<String>,
 }
 
+impl FromProviderMessage for PiMessage {}
+
+impl From<PiMessage> for AgentMessage {
+    fn from(value: PiMessage) -> Self {
+        AgentMessage {
+            typ: value.typ,
+            id: value.id,
+            timestamp: value.timestamp,
+            cwd: value.cwd,
+        }
+    }
+}
+
 #[derive(Deserialize, Debug)]
 pub struct CodexMessage {}
 
-impl AgentMessage for PiMessage {}
+impl FromProviderMessage for CodexMessage {}
 
-impl AgentMessage for CodexMessage {}
-
-impl Provider {
-    pub fn list_sessions(&self) -> Vec<Session> {
-        match self.name {
-            ProviderEnum::Pi => {
-                let dirs = walk_dir(&self.dir).unwrap();
-                let sessions: Vec<Session> = dirs
-                    .iter()
-                    .map(|dir| {
-                        let data: Vec<PiMessage> =
-                            PiMessage::parse_vec(dir.path().as_path().to_str().unwrap()).unwrap();
-                        let initialized_message = data.get(0).unwrap();
-                        Session {
-                            id: initialized_message.id.clone(),
-                            provider: ProviderEnum::Pi,
-                            ts: initialized_message.timestamp.clone(),
-                            cwd: initialized_message.cwd.clone().unwrap(),
-                            messages: None,
-                        }
-                    })
-                    .collect();
-                return sessions;
-            }
-            ProviderEnum::Codex => {}
-        }
-        vec![]
-    }
-
-    pub fn load_session(self, session_id: String) -> Session {
+impl From<CodexMessage> for AgentMessage {
+    fn from(value: CodexMessage) -> Self {
         todo!()
     }
 }
 
-fn walk_dir(dir: &String) -> Result<Vec<DirEntry>, io::Error> {
+impl Provider {
+    pub fn list_sessions(&self) -> Vec<Session> {
+        list_sessions_impl(self)
+    }
+
+    pub fn load_session(self, session_id: String) -> Session {
+        load_session_impl(&self, session_id)
+    }
+}
+
+pub(crate) fn walk_dir(dir: &String) -> Result<Vec<String>, io::Error> {
     let cur = fs::read_dir(dir)?;
 
     let list: Vec<Result<DirEntry, io::Error>> = cur.collect();
 
-    let mut file_paths: Vec<DirEntry> = vec![];
+    let mut file_paths: Vec<String> = vec![];
     for res_file in list {
         let file = res_file?;
         let typ = file.file_type()?;
         let path = file.path().to_str().unwrap().to_string();
         if typ.is_file() {
-            file_paths.push(file)
+            file_paths.push(file.path().to_str().unwrap().to_string())
         } else if typ.is_dir() {
             file_paths.extend(walk_dir(&path)?)
         }
@@ -129,7 +132,7 @@ fn walk_dir(dir: &String) -> Result<Vec<DirEntry>, io::Error> {
 
 #[cfg(test)]
 mod tests {
-    use crate::provider::{walk_dir, Provider, ProviderEnum};
+    use crate::agent::provider::{Provider, ProviderEnum, walk_dir};
     use std::env;
 
     #[test]

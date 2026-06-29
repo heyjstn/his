@@ -1,13 +1,14 @@
-mod provider;
+pub mod agent;
 
-use crate::provider::{Provider, Session};
+use agent::provider::Provider;
+use agent::session::Session;
 use serde::Deserialize;
 use std::env::args_os;
 use std::fs;
 use std::process::ExitCode;
 
 #[derive(Debug)]
-enum RuntimeErr {
+pub enum RuntimeErr {
     InvalidNumArgs,
     UnsupportedCommand,
     InvalidConfigDir,
@@ -90,8 +91,10 @@ impl Config {
     fn list_sessions(self) -> Vec<Session> {
         match self.providers {
             Some(providers) => {
-                let mut sessions: Vec<Session> = providers.iter()
-                    .flat_map(|provider| provider.list_sessions()).collect();
+                let mut sessions: Vec<Session> = providers
+                    .iter()
+                    .flat_map(|provider| provider.list_sessions())
+                    .collect();
                 sessions.sort_by_key(|s| s.ts.clone());
                 sessions
             }
