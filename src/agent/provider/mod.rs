@@ -66,8 +66,16 @@ pub struct AgentMessage {
     #[serde(rename = "type")]
     pub typ: String,
     pub id: String,
+    pub parent_id: Option<String>,
     pub timestamp: String,
     pub cwd: Option<String>,
+    pub role: Option<String>,
+    pub text: Option<String>,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub tool_call_id: Option<String>,
+    pub tool_name: Option<String>,
+    pub is_error: Option<bool>,
 }
 
 impl FromProviderMessage for AgentMessage {}

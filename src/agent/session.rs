@@ -22,11 +22,9 @@ pub fn list_sessions(provider: &Provider) -> Vec<Session> {
     let file_paths = super::provider::walk_dir(&provider.dir).unwrap();
     let sessions: Vec<Session> = file_paths
         .iter()
-        .map(|path| {
-            match provider.name {
-                ProviderEnum::Codex => CodexMessage::parse_vec(path).unwrap(),
-                ProviderEnum::Pi => PiMessage::parse_vec(path).unwrap()
-            }
+        .map(|path| match provider.name {
+            ProviderEnum::Codex => CodexMessage::parse_vec(path).unwrap(),
+            ProviderEnum::Pi => PiMessage::parse_vec(path).unwrap(),
         })
         .map(|data| {
             let initialized_message = data.get(0).unwrap();
@@ -40,7 +38,6 @@ pub fn list_sessions(provider: &Provider) -> Vec<Session> {
         })
         .collect();
     sessions
-    // }
 }
 
 pub fn load_session(_provider: &Provider, _session_id: String) -> Session {
