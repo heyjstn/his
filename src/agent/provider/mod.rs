@@ -61,6 +61,7 @@ pub trait FromProviderMessage: Sized + DeserializeOwned {
     }
 }
 
+/// Generic message for all coding agents message
 #[derive(Deserialize, Debug)]
 pub struct AgentMessage {
     #[serde(rename = "type")]
