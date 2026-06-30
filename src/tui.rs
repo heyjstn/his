@@ -5,14 +5,14 @@ use chrono::{DateTime, Utc};
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
-use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{List, ListItem, Paragraph};
+use ratatui::Terminal;
 use std::io::{self, Stdout};
 
 pub(crate) fn run(config: &Config) -> Result<(), RuntimeErr> {
@@ -70,10 +70,11 @@ fn run_app(
                 );
 
                 let visible = app.visible_sessions();
+                let row_layout = RowLayout::new(list.width as usize, &visible);
                 let items = visible
                     .iter()
                     .enumerate()
-                    .map(|(row, session)| session_row(session, row == app.selected))
+                    .map(|(row, session)| session_row(session, row == app.selected, row_layout))
                     .collect::<Vec<_>>();
 
                 frame.render_widget(List::new(items), list);
@@ -145,7 +146,44 @@ impl App {
     }
 }
 
-fn session_row(session: &Session, selected: bool) -> ListItem<'static> {
+#[derive(Clone, Copy)]
+struct RowLayout {
+    width: usize,
+    cwd_width: usize,
+}
+
+impl RowLayout {
+    fn new(width: usize, sessions: &[&Session]) -> Self {
+        let max_cwd_width = sessions
+            .iter()
+            .map(|session| display_width(&session.cwd))
+            .max()
+            .unwrap_or_default();
+        let fixed_width =
+            MARKER_WIDTH + PROVIDER_WIDTH + ELAPSED_WIDTH + MESSAGE_GAP_WIDTH + MIN_MESSAGE_WIDTH;
+        let cwd_width = max_cwd_width
+            .min(MAX_CWD_WIDTH)
+            .min(width.saturating_sub(fixed_width));
+
+        Self { width, cwd_width }
+    }
+
+    fn message_width(self) -> usize {
+        self.width.saturating_sub(
+            MARKER_WIDTH + PROVIDER_WIDTH + ELAPSED_WIDTH + self.cwd_width + MESSAGE_GAP_WIDTH,
+        )
+    }
+}
+
+const MARKER_WIDTH: usize = 2;
+const PROVIDER_WIDTH: usize = 7;
+const ELAPSED_WIDTH: usize = 9;
+const MESSAGE_GAP_WIDTH: usize = 4;
+const MIN_MESSAGE_WIDTH: usize = 2;
+const MAX_CWD_WIDTH: usize = 40;
+const OVERFLOW_MARKER: &str = "..";
+
+fn session_row(session: &Session, selected: bool, layout: RowLayout) -> ListItem<'static> {
     let marker = if selected { "> " } else { "  " };
     let style = if selected {
         Style::default()
@@ -155,15 +193,58 @@ fn session_row(session: &Session, selected: bool) -> ListItem<'static> {
     } else {
         Style::default().fg(Color::Gray)
     };
+    let cwd = fixed_width(&session.cwd, layout.cwd_width);
+    let first_message = truncate_end(&session.first_message, layout.message_width());
 
     ListItem::new(Line::from(vec![
         Span::raw(marker),
-        Span::styled(format!("{:<7}", provider_name(&session.provider)), style),
-        Span::styled(format!("{:<9}", elapsed(&session.ts)), style),
-        Span::styled(session.cwd.clone(), style),
-        Span::styled("    ", style),
-        Span::styled(session.first_message.clone(), style),
+        Span::styled(
+            fixed_width(provider_name(&session.provider), PROVIDER_WIDTH),
+            style,
+        ),
+        Span::styled(fixed_width(&elapsed(&session.ts), ELAPSED_WIDTH), style),
+        Span::styled(cwd, style),
+        Span::styled(" ".repeat(MESSAGE_GAP_WIDTH), style),
+        Span::styled(first_message, style),
     ]))
+}
+
+fn fixed_width(value: &str, width: usize) -> String {
+    let value = truncate_end(value, width);
+    let padding = width.saturating_sub(display_width(&value));
+    format!("{}{}", value, " ".repeat(padding))
+}
+
+fn truncate_end(value: &str, max_width: usize) -> String {
+    let value = value.replace(['\r', '\n'], " ");
+    if display_width(&value) <= max_width {
+        return value;
+    }
+
+    if max_width <= OVERFLOW_MARKER.len() {
+        return ".".repeat(max_width);
+    }
+
+    let target_width = max_width - OVERFLOW_MARKER.len();
+    let mut truncated = String::new();
+    let mut width = 0;
+
+    for ch in value.chars() {
+        let ch_width = display_width(&ch.to_string());
+        if width + ch_width > target_width {
+            break;
+        }
+
+        truncated.push(ch);
+        width += ch_width;
+    }
+
+    truncated.push_str(OVERFLOW_MARKER);
+    truncated
+}
+
+fn display_width(value: &str) -> usize {
+    Span::raw(value).width()
 }
 
 fn provider_name(provider: &ProviderEnum) -> &'static str {
