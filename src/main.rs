@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod cli;
+pub mod tui;
 
 use crate::cli::run;
 use agent::provider::Provider;
@@ -16,7 +17,7 @@ pub enum RuntimeErr {
     Generic(String),
 }
 
-pub const DEFAULT_CONFIG_DIR: &str = "$HOME/.his";
+// pub const DEFAULT_CONFIG_DIR: &str = "$HOME/.his";
 
 fn main() -> Result<ExitCode, RuntimeErr> {
     Ok(run())

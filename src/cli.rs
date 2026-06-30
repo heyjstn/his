@@ -1,5 +1,6 @@
-use crate::{Config, DEFAULT_CONFIG_DIR, list_sessions};
+use crate::{Config, list_sessions, tui};
 use clap::{Parser, Subcommand};
+use std::env;
 use std::process::ExitCode;
 
 #[derive(Debug, Subcommand)]
@@ -22,10 +23,15 @@ struct Cli {
 pub fn run() -> ExitCode {
     let cli = Cli::parse();
 
-    let config = Config::new(DEFAULT_CONFIG_DIR.to_string()).expect("failed");
+    let dir = format!(
+        "{}/{}",
+        env::current_dir().unwrap().to_str().unwrap(),
+        "tests/.his"
+    );
+    let config = Config::new(dir).expect("failed");
 
     match cli.command {
-        None => println!("{:?}", "Entering TUI"),
+        None => tui::run(&config).expect("failed"),
         Some(Command::ListSession) => list_sessions(&config).expect("failed"),
     }
     ExitCode::SUCCESS

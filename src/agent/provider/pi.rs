@@ -156,9 +156,12 @@ pub struct Cost {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolResultDetails {
-    pub diff: String,
-    pub patch: String,
-    pub first_changed_line: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub patch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_changed_line: Option<i64>,
 }
 
 impl FromProviderMessage for PiMessage {}
