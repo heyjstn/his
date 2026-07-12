@@ -1,7 +1,7 @@
-pub mod codex;
-pub mod pi;
+mod codex;
+mod pi;
 
-use crate::agent::session::{
+use super::session::{
     Session, list_sessions as list_sessions_impl, load_session as load_session_impl,
 };
 use anyhow::{Context, Result};

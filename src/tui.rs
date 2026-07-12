@@ -1,6 +1,6 @@
-use crate::Config;
 use crate::agent::provider::ProviderEnum;
 use crate::agent::session::Session;
+use crate::config::Config;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
