@@ -1,4 +1,5 @@
-use crate::{Config, list_sessions, tui};
+use crate::config::Config;
+use crate::tui;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::env;
@@ -34,4 +35,9 @@ pub fn run() -> Result<ExitCode> {
         Some(Command::ListSession) => list_sessions(&config)?,
     }
     Ok(ExitCode::SUCCESS)
+}
+
+fn list_sessions(config: &Config) -> Result<()> {
+    println!("{:?}", config.list_sessions()?);
+    Ok(())
 }
