@@ -1,8 +1,9 @@
 use super::provider::{
     AgentMessage, CodexMessage, FromProviderMessage, PiMessage, Provider, ProviderEnum,
 };
-use crate::RuntimeErr;
+use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
+use std::path::Path;
 
 #[derive(Deserialize, Debug)]
 pub struct Session {
@@ -23,24 +24,26 @@ pub struct SessionMessage {
     pub text: String,
 }
 
-pub fn list_sessions(provider: &Provider) -> Vec<Session> {
-    let Ok(file_paths) = super::provider::walk_dir(&provider.dir) else {
-        return vec![];
-    };
+pub fn list_sessions(provider: &Provider) -> Result<Vec<Session>> {
+    let file_paths = super::provider::walk_dir(&provider.dir)?;
 
-    file_paths
+    Ok(file_paths
         .iter()
         .filter_map(|path| parse_session(provider, path, false).ok())
-        .collect()
+        .collect())
 }
 
-pub fn load_session(provider: &Provider, session_id: String) -> Result<Session, RuntimeErr> {
-    let file_paths = super::provider::walk_dir(&provider.dir)
-        .map_err(|err| RuntimeErr::Generic(err.to_string()))?;
+pub fn load_session(provider: &Provider, session_id: String) -> Result<Session> {
+    let file_paths = super::provider::walk_dir(&provider.dir)?;
+    let mut parse_error = None;
 
     for path in file_paths {
-        let Ok(session) = parse_session(provider, &path, true) else {
-            continue;
+        let session = match parse_session(provider, &path, true) {
+            Ok(session) => session,
+            Err(error) => {
+                parse_error = Some(error);
+                continue;
+            }
         };
 
         if session.id == session_id {
@@ -48,22 +51,22 @@ pub fn load_session(provider: &Provider, session_id: String) -> Result<Session, 
         }
     }
 
-    Err(RuntimeErr::Generic(format!(
+    if let Some(error) = parse_error {
+        return Err(error).with_context(|| format!("failed to find session {session_id}"));
+    }
+
+    Err(anyhow!(
         "session {session_id} was not found for {:?}",
         provider.name
-    )))
+    ))
 }
 
-fn parse_session(
-    provider: &Provider,
-    path: &str,
-    include_messages: bool,
-) -> Result<Session, RuntimeErr> {
+fn parse_session(provider: &Provider, path: &Path, include_messages: bool) -> Result<Session> {
     let data = parse_messages(provider, path)?;
     let initialized_message = data
         .iter()
         .find(|message| message.typ == "session")
-        .ok_or_else(|| RuntimeErr::Generic(format!("missing session metadata in {path}")))?;
+        .with_context(|| format!("missing session metadata in {}", path.display()))?;
     let first_message = data
         .iter()
         .find(|message| message.typ == "message" && message.role.as_deref() == Some("user"))
@@ -97,13 +100,13 @@ fn parse_session(
         cwd: initialized_message
             .cwd
             .clone()
-            .ok_or_else(|| RuntimeErr::Generic(format!("missing cwd in {path}")))?,
+            .with_context(|| format!("missing cwd in {}", path.display()))?,
         messages,
         first_message,
     })
 }
 
-fn parse_messages(provider: &Provider, path: &str) -> Result<Vec<AgentMessage>, RuntimeErr> {
+fn parse_messages(provider: &Provider, path: &Path) -> Result<Vec<AgentMessage>> {
     match provider.name {
         ProviderEnum::Codex => CodexMessage::parse_vec(path),
         ProviderEnum::Pi => PiMessage::parse_vec(path),

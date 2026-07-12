@@ -1,4 +1,5 @@
 use crate::{Config, list_sessions, tui};
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::env;
 use std::process::ExitCode;
@@ -20,19 +21,17 @@ struct Cli {
     command: Option<Command>,
 }
 
-pub fn run() -> ExitCode {
+pub fn run() -> Result<ExitCode> {
     let cli = Cli::parse();
 
-    let dir = format!(
-        "{}/{}",
-        env::current_dir().unwrap().to_str().unwrap(),
-        "tests/.his"
-    );
-    let config = Config::new(dir).expect("failed");
+    let dir = env::current_dir()
+        .context("failed to determine the current directory")?
+        .join("tests/.his");
+    let config = Config::new(dir)?;
 
     match cli.command {
-        None => tui::run(&config).expect("failed"),
-        Some(Command::ListSession) => list_sessions(&config).expect("failed"),
+        None => tui::run(&config)?,
+        Some(Command::ListSession) => list_sessions(&config)?,
     }
-    ExitCode::SUCCESS
+    Ok(ExitCode::SUCCESS)
 }

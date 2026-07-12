@@ -1,6 +1,7 @@
+use crate::Config;
 use crate::agent::provider::ProviderEnum;
 use crate::agent::session::Session;
-use crate::{Config, RuntimeErr};
+use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use crossterm::execute;
@@ -15,8 +16,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{List, ListItem, Paragraph, Wrap};
 use std::io::{self, Stdout};
 
-pub(crate) fn run(config: &Config) -> Result<(), RuntimeErr> {
-    let mut sessions = config.list_sessions();
+pub(crate) fn run(config: &Config) -> Result<()> {
+    let mut sessions = config.list_sessions()?;
     sessions.sort_by(|a, b| b.ts.cmp(&a.ts));
 
     let mut app = App {
@@ -47,7 +48,7 @@ fn run_app(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     app: &mut App,
     config: &Config,
-) -> Result<(), RuntimeErr> {
+) -> Result<()> {
     loop {
         terminal
             .draw(|frame| {
@@ -106,11 +107,9 @@ fn run_app(
                     footer,
                 );
             })
-            .map_err(|err| RuntimeErr::Generic(err.to_string()))?;
+            .context("failed to draw the terminal UI")?;
 
-        if let Event::Key(key) =
-            event::read().map_err(|err| RuntimeErr::Generic(err.to_string()))?
-        {
+        if let Event::Key(key) = event::read().context("failed to read terminal input")? {
             if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
                 break;
             }
@@ -199,7 +198,7 @@ impl App {
                 self.detail_scroll = 0;
                 self.error = None;
             }
-            Err(err) => self.error = Some(format!("Unable to load session: {err:?}")),
+            Err(err) => self.error = Some(format!("Unable to load session: {err:#}")),
         }
     }
 }
@@ -401,19 +400,18 @@ fn elapsed(timestamp: &str) -> String {
     }
 }
 
-fn enter_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>, RuntimeErr> {
-    enable_raw_mode().map_err(|err| RuntimeErr::Generic(err.to_string()))?;
+fn enter_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
+    enable_raw_mode().context("failed to enable terminal raw mode")?;
     execute!(io::stdout(), EnterAlternateScreen)
-        .map_err(|err| RuntimeErr::Generic(err.to_string()))?;
-    Terminal::new(CrosstermBackend::new(io::stdout()))
-        .map_err(|err| RuntimeErr::Generic(err.to_string()))
+        .context("failed to enter the alternate terminal screen")?;
+    Terminal::new(CrosstermBackend::new(io::stdout())).context("failed to initialize the terminal")
 }
 
-fn leave_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<(), RuntimeErr> {
-    disable_raw_mode().map_err(|err| RuntimeErr::Generic(err.to_string()))?;
+fn leave_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
+    disable_raw_mode().context("failed to disable terminal raw mode")?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)
-        .map_err(|err| RuntimeErr::Generic(err.to_string()))?;
+        .context("failed to leave the alternate terminal screen")?;
     terminal
         .show_cursor()
-        .map_err(|err| RuntimeErr::Generic(err.to_string()))
+        .context("failed to restore the terminal cursor")
 }
