@@ -3,6 +3,7 @@ use super::provider::{
 };
 use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
+use std::collections::HashSet;
 use std::path::Path;
 
 #[derive(Deserialize, Debug)]
@@ -24,7 +25,47 @@ pub struct SessionMessage {
     pub text: String,
 }
 
-pub fn list_sessions(provider: &Provider) -> Result<Vec<Session>> {
+#[derive(Debug)]
+pub struct SessionRepository<'a> {
+    providers: &'a [Provider],
+}
+
+impl<'a> SessionRepository<'a> {
+    pub fn new(providers: &'a [Provider]) -> Result<Self> {
+        let mut provider_names = HashSet::new();
+        for provider in providers {
+            if !provider_names.insert(provider.name) {
+                return Err(anyhow!(
+                    "provider {:?} is configured more than once",
+                    provider.name
+                ));
+            }
+        }
+        Ok(Self { providers })
+    }
+
+    pub fn list_sessions(&self) -> Result<Vec<Session>> {
+        let mut sessions = Vec::new();
+        for provider in self.providers {
+            sessions.extend(list_provider_sessions(provider)?);
+        }
+        sessions.sort_by_key(|session| session.ts.clone());
+        Ok(sessions)
+    }
+
+    pub fn load_session(&self, provider_name: ProviderEnum, session_id: &str) -> Result<Session> {
+        let provider = self
+            .providers
+            .iter()
+            .find(|provider| provider.name == provider_name)
+            .ok_or_else(|| anyhow!("provider {provider_name:?} is not configured"))?;
+
+        load_provider_session(provider, session_id)
+            .with_context(|| format!("failed to load session {session_id}"))
+    }
+}
+
+fn list_provider_sessions(provider: &Provider) -> Result<Vec<Session>> {
     let file_paths = super::provider::walk_dir(&provider.dir)?;
 
     Ok(file_paths
@@ -33,7 +74,7 @@ pub fn list_sessions(provider: &Provider) -> Result<Vec<Session>> {
         .collect())
 }
 
-pub fn load_session(provider: &Provider, session_id: String) -> Result<Session> {
+fn load_provider_session(provider: &Provider, session_id: &str) -> Result<Session> {
     let file_paths = super::provider::walk_dir(&provider.dir)?;
     let mut parse_error = None;
 
@@ -115,11 +156,13 @@ fn parse_messages(provider: &Provider, path: &Path) -> Result<Vec<AgentMessage>>
 
 #[cfg(test)]
 mod tests {
-    use super::load_session;
+    use super::SessionRepository;
     use crate::agent::provider::{Provider, ProviderEnum};
     use std::fs;
     use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_TEST_DIR: AtomicU64 = AtomicU64::new(0);
 
     #[test]
     fn loads_pi_session_messages() {
@@ -132,7 +175,10 @@ mod tests {
         );
         let (dir, provider) = test_provider(ProviderEnum::Pi, "session.jsonl", data);
 
-        let session = load_session(&provider, "pi-session".to_string()).unwrap();
+        let repository = SessionRepository::new(std::slice::from_ref(&provider)).unwrap();
+        let session = repository
+            .load_session(ProviderEnum::Pi, "pi-session")
+            .unwrap();
 
         assert_eq!(session.first_message, "Hello");
         let messages = session.messages.unwrap();
@@ -165,19 +211,113 @@ mod tests {
         "#;
         let (dir, provider) = test_provider(ProviderEnum::Codex, "session.jsonl", data);
 
-        let session = load_session(&provider, "codex-session".to_string()).unwrap();
+        let repository = SessionRepository::new(std::slice::from_ref(&provider)).unwrap();
+        let session = repository
+            .load_session(ProviderEnum::Codex, "codex-session")
+            .unwrap();
 
         assert_eq!(session.cwd, "/tmp/codex");
         assert_eq!(session.messages.unwrap()[0].text, "Read this");
         fs::remove_dir_all(dir).unwrap();
     }
 
+    #[test]
+    fn returns_no_sessions_without_providers() {
+        let repository = SessionRepository::new(&[]).unwrap();
+
+        assert!(repository.list_sessions().unwrap().is_empty());
+    }
+
+    #[test]
+    fn rejects_an_unconfigured_provider() {
+        let repository = SessionRepository::new(&[]).unwrap();
+
+        let error = repository
+            .load_session(ProviderEnum::Codex, "missing")
+            .unwrap_err();
+
+        assert_eq!(format!("{error:#}"), "provider Codex is not configured");
+    }
+
+    #[test]
+    fn lists_sessions_in_timestamp_order() {
+        let earlier_data = r#"{"type":"session","version":3,"id":"earlier","timestamp":"2026-07-11T01:00:00Z","cwd":"/tmp/earlier"}"#;
+        let later_data = r#"{"type":"session","version":3,"id":"later","timestamp":"2026-07-12T01:00:00Z","cwd":"/tmp/later"}"#;
+        let (dir, provider) = test_provider(ProviderEnum::Pi, "earlier.jsonl", earlier_data);
+        fs::write(dir.join("later.jsonl"), later_data).unwrap();
+        let providers = [provider];
+        let repository = SessionRepository::new(&providers).unwrap();
+
+        let sessions = repository.list_sessions().unwrap();
+
+        assert_eq!(
+            sessions
+                .iter()
+                .map(|session| session.id.as_str())
+                .collect::<Vec<_>>(),
+            ["earlier", "later"]
+        );
+        assert!(sessions.iter().all(|session| session.messages.is_none()));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn loads_from_the_requested_provider() {
+        let codex_data = r#"
+            {
+                "timestamp": "2026-07-12T01:00:00Z",
+                "type": "session_meta",
+                "payload": {
+                    "id": "codex-session",
+                    "timestamp": "2026-07-12T01:00:00Z",
+                    "cwd": "/tmp/codex"
+                }
+            }
+        "#;
+        let pi_data = r#"{"type":"session","version":3,"id":"pi-session","timestamp":"2026-07-12T01:00:00Z","cwd":"/tmp/pi"}"#;
+        let (codex_dir, codex_provider) =
+            test_provider(ProviderEnum::Codex, "codex.jsonl", codex_data);
+        let (pi_dir, pi_provider) = test_provider(ProviderEnum::Pi, "pi.jsonl", pi_data);
+        let providers = [codex_provider, pi_provider];
+        let repository = SessionRepository::new(&providers).unwrap();
+
+        let session = repository
+            .load_session(ProviderEnum::Pi, "pi-session")
+            .unwrap();
+
+        assert_eq!(session.provider, ProviderEnum::Pi);
+        assert_eq!(session.cwd, "/tmp/pi");
+        fs::remove_dir_all(codex_dir).unwrap();
+        fs::remove_dir_all(pi_dir).unwrap();
+    }
+
+    #[test]
+    fn rejects_duplicate_provider_types() {
+        let providers = [
+            Provider {
+                name: ProviderEnum::Pi,
+                dir: "/tmp/first".to_string(),
+            },
+            Provider {
+                name: ProviderEnum::Pi,
+                dir: "/tmp/second".to_string(),
+            },
+        ];
+
+        let error = SessionRepository::new(&providers).unwrap_err();
+
+        assert_eq!(
+            format!("{error:#}"),
+            "provider Pi is configured more than once"
+        );
+    }
+
     fn test_provider(name: ProviderEnum, file_name: &str, data: &str) -> (PathBuf, Provider) {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let dir = std::env::temp_dir().join(format!("his-load-session-{nonce}"));
+        let sequence = NEXT_TEST_DIR.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "his-load-session-{}-{sequence}-{file_name}",
+            std::process::id()
+        ));
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join(file_name), data).unwrap();
         let provider = Provider {

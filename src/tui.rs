@@ -1,6 +1,5 @@
 use crate::agent::provider::ProviderEnum;
-use crate::agent::session::Session;
-use crate::config::Config;
+use crate::agent::session::{Session, SessionRepository};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
@@ -16,8 +15,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{List, ListItem, Paragraph, Wrap};
 use std::io::{self, Stdout};
 
-pub(crate) fn run(config: &Config) -> Result<()> {
-    let mut sessions = config.list_sessions()?;
+pub(crate) fn run(repository: &SessionRepository<'_>) -> Result<()> {
+    let mut sessions = repository.list_sessions()?;
     sessions.sort_by(|a, b| b.ts.cmp(&a.ts));
 
     let mut app = App {
@@ -30,7 +29,7 @@ pub(crate) fn run(config: &Config) -> Result<()> {
     };
 
     let mut terminal = enter_terminal()?;
-    let result = run_app(&mut terminal, &mut app, config);
+    let result = run_app(&mut terminal, &mut app, repository);
     leave_terminal(&mut terminal)?;
     result
 }
@@ -47,7 +46,7 @@ struct App {
 fn run_app(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     app: &mut App,
-    config: &Config,
+    repository: &SessionRepository<'_>,
 ) -> Result<()> {
     loop {
         terminal
@@ -136,7 +135,7 @@ fn run_app(
 
             match key.code {
                 KeyCode::Esc => break,
-                KeyCode::Enter => app.open_selected(config),
+                KeyCode::Enter => app.open_selected(repository),
                 KeyCode::Char(ch) => {
                     app.search.push(ch);
                     app.selected = 0;
@@ -183,7 +182,7 @@ impl App {
         }
     }
 
-    fn open_selected(&mut self, config: &Config) {
+    fn open_selected(&mut self, repository: &SessionRepository<'_>) {
         let selected = self
             .visible_sessions()
             .get(self.selected)
@@ -192,7 +191,7 @@ impl App {
             return;
         };
 
-        match config.load_session(provider, session_id) {
+        match repository.load_session(provider, &session_id) {
             Ok(session) => {
                 self.active_session = Some(session);
                 self.detail_scroll = 0;

@@ -1,4 +1,5 @@
-use crate::config::Config;
+use crate::agent::session::SessionRepository;
+use crate::config;
 use crate::tui;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -28,16 +29,18 @@ pub fn run() -> Result<ExitCode> {
     let dir = env::current_dir()
         .context("failed to determine the current directory")?
         .join("tests/.his");
-    let config = Config::new(dir)?;
+    let config = config::load(dir)?;
+    let providers = config.providers.as_deref().unwrap_or_default();
+    let repository = SessionRepository::new(providers)?;
 
     match cli.command {
-        None => tui::run(&config)?,
-        Some(Command::ListSession) => list_sessions(&config)?,
+        None => tui::run(&repository)?,
+        Some(Command::ListSession) => list_sessions(&repository)?,
     }
     Ok(ExitCode::SUCCESS)
 }
 
-fn list_sessions(config: &Config) -> Result<()> {
-    println!("{:?}", config.list_sessions()?);
+fn list_sessions(repository: &SessionRepository<'_>) -> Result<()> {
+    println!("{:?}", repository.list_sessions()?);
     Ok(())
 }

@@ -1,9 +1,6 @@
 mod codex;
 mod pi;
 
-use super::session::{
-    Session, list_sessions as list_sessions_impl, load_session as load_session_impl,
-};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -13,7 +10,7 @@ use std::path::{Path, PathBuf};
 pub use codex::CodexMessage;
 pub use pi::PiMessage;
 
-#[derive(Clone, Copy, Deserialize, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Deserialize, Debug, Eq, Hash, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderEnum {
     Codex,
@@ -76,16 +73,6 @@ pub struct AgentMessage {
 }
 
 impl FromProviderMessage for AgentMessage {}
-
-impl Provider {
-    pub fn list_sessions(&self) -> Result<Vec<Session>> {
-        list_sessions_impl(self)
-    }
-
-    pub fn load_session(&self, session_id: String) -> Result<Session> {
-        load_session_impl(self, session_id)
-    }
-}
 
 pub(crate) fn walk_dir(dir: impl AsRef<Path>) -> Result<Vec<PathBuf>> {
     let dir = dir.as_ref();
