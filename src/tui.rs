@@ -1,5 +1,6 @@
 use crate::agent::provider::ProviderEnum;
-use crate::agent::session::{Session, SessionRepository};
+use crate::agent::session::{Session, SessionMessage, SessionRepository};
+use crate::renderer::render_markdown;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
@@ -227,30 +228,7 @@ fn render_session(frame: &mut ratatui::Frame, app: &App, session: &Session) {
         header,
     );
 
-    let mut lines = Vec::new();
-    for message in session.messages.as_deref().unwrap_or_default() {
-        let color = match message.role.as_str() {
-            "user" => Color::LightCyan,
-            "assistant" => Color::LightGreen,
-            _ => Color::Gray,
-        };
-        lines.push(Line::from(vec![
-            Span::styled(
-                message.role.as_str(),
-                Style::default().fg(color).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("  "),
-            Span::styled(&message.ts, Style::default().fg(Color::DarkGray)),
-        ]));
-        lines.extend(message.text.lines().map(|line| Line::raw(line.to_string())));
-        lines.push(Line::default());
-    }
-    if lines.is_empty() {
-        lines.push(Line::styled(
-            "No readable user or assistant messages in this session.",
-            Style::default().fg(Color::DarkGray),
-        ));
-    }
+    let lines = session_message_lines(session.messages.as_deref().unwrap_or_default());
 
     frame.render_widget(
         Paragraph::new(lines)
@@ -272,6 +250,40 @@ fn render_session(frame: &mut ratatui::Frame, app: &App, session: &Session) {
         ])),
         footer,
     );
+}
+
+const USER_ROLE: &str = "user";
+const ASSISTANT_ROLE: &str = "assistant";
+const EMPTY_SESSION_MESSAGE: &str = "No readable user or assistant messages in this session.";
+
+fn session_message_lines(messages: &[SessionMessage]) -> Vec<Line<'_>> {
+    if messages.is_empty() {
+        return vec![Line::styled(
+            EMPTY_SESSION_MESSAGE,
+            Style::default().fg(Color::DarkGray),
+        )];
+    }
+
+    let mut lines = Vec::new();
+    for message in messages {
+        let color = match message.role.as_str() {
+            USER_ROLE => Color::LightCyan,
+            ASSISTANT_ROLE => Color::LightGreen,
+            _ => Color::Gray,
+        };
+        lines.push(Line::from(vec![
+            Span::styled(
+                message.role.as_str(),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled(&message.ts, Style::default().fg(Color::DarkGray)),
+        ]));
+        lines.extend(render_markdown(&message.text).lines);
+        lines.push(Line::default());
+    }
+
+    lines
 }
 
 #[derive(Clone, Copy)]
@@ -413,4 +425,45 @@ fn leave_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<(
     terminal
         .show_cursor()
         .context("failed to restore the terminal cursor")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{EMPTY_SESSION_MESSAGE, session_message_lines};
+    use crate::agent::provider::ProviderEnum;
+    use crate::agent::session::SessionMessage;
+    use ratatui::style::Modifier;
+
+    #[test]
+    fn renders_session_message_markdown() {
+        let messages = [SessionMessage {
+            id: "message-1".to_string(),
+            provider: ProviderEnum::Codex,
+            ts: "2026-07-13T01:00:00Z".to_string(),
+            role: "assistant".to_string(),
+            text: "A **bold** answer".to_string(),
+        }];
+
+        let lines = session_message_lines(&messages);
+
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0].spans[0].content, "assistant");
+        assert_eq!(lines[1].spans[0].content, "A ");
+        assert_eq!(lines[1].spans[1].content, "bold");
+        assert!(
+            lines[1].spans[1]
+                .style
+                .add_modifier
+                .contains(Modifier::BOLD)
+        );
+        assert_eq!(lines[1].spans[2].content, " answer");
+    }
+
+    #[test]
+    fn renders_empty_session_message() {
+        let lines = session_message_lines(&[]);
+
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].spans[0].content, EMPTY_SESSION_MESSAGE);
+    }
 }
