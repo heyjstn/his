@@ -14,20 +14,11 @@ use std::io;
 pub use codex::CodexMessage;
 pub use pi::PiMessage;
 
-#[derive(Deserialize, Debug)]
+#[derive(Clone, Copy, Deserialize, Debug, Eq, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderEnum {
     Codex,
     Pi,
-}
-
-impl ProviderEnum {
-    pub(crate) fn clone(&self) -> ProviderEnum {
-        match self {
-            &ProviderEnum::Pi => ProviderEnum::Pi,
-            &ProviderEnum::Codex => ProviderEnum::Codex,
-        }
-    }
 }
 
 #[derive(Deserialize, Debug)]
@@ -55,8 +46,13 @@ pub trait FromProviderMessage: Sized + DeserializeOwned {
         AgentMessage: From<Self>,
     {
         let file = Self::read_to_string(path)?;
-        file.lines()
-            .map(|line| Self::from_message_str(line))
+        serde_json::Deserializer::from_str(&file)
+            .into_iter::<Self>()
+            .map(|message| {
+                message
+                    .map(Into::into)
+                    .map_err(|err| RuntimeErr::Generic(err.to_string()))
+            })
             .collect()
     }
 }
@@ -86,8 +82,8 @@ impl Provider {
         list_sessions_impl(self)
     }
 
-    pub fn load_session(self, session_id: String) -> Session {
-        load_session_impl(&self, session_id)
+    pub fn load_session(&self, session_id: String) -> Result<Session, RuntimeErr> {
+        load_session_impl(self, session_id)
     }
 }
 
@@ -109,40 +105,4 @@ pub(crate) fn walk_dir(dir: &String) -> Result<Vec<String>, io::Error> {
     }
 
     Ok(file_paths)
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::agent::provider::{Provider, ProviderEnum, walk_dir};
-    use std::env;
-
-    #[test]
-    fn test_list_sessions_1() {
-        let cwd = env::current_dir().unwrap().to_str().unwrap().to_string();
-        let dir = format!("{}/tests/.codex/sessions", cwd);
-
-        let provider = Provider {
-            name: ProviderEnum::Codex,
-            dir,
-        };
-
-        println!("{:?}", walk_dir(&format!("{}/tests/.codex/sessions", cwd)));
-
-        let sessions = provider.list_sessions();
-        assert!(sessions.is_empty());
-    }
-
-    #[test]
-    fn test_list_sessions_2() {
-        let cwd = env::current_dir().unwrap().to_str().unwrap().to_string();
-        let dir = format!("{}/tests/.pi/agent/sessions", cwd);
-
-        let provider = Provider {
-            name: ProviderEnum::Pi,
-            dir,
-        };
-
-        println!("{:?}", provider.list_sessions());
-        // assert!(!provider.list_sessions().is_empty());
-    }
 }

@@ -5,14 +5,14 @@ use chrono::{DateTime, Utc};
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
+use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{List, ListItem, Paragraph};
-use ratatui::Terminal;
+use ratatui::widgets::{List, ListItem, Paragraph, Wrap};
 use std::io::{self, Stdout};
 
 pub(crate) fn run(config: &Config) -> Result<(), RuntimeErr> {
@@ -23,10 +23,13 @@ pub(crate) fn run(config: &Config) -> Result<(), RuntimeErr> {
         sessions,
         selected: 0,
         search: String::new(),
+        active_session: None,
+        detail_scroll: 0,
+        error: None,
     };
 
     let mut terminal = enter_terminal()?;
-    let result = run_app(&mut terminal, &mut app);
+    let result = run_app(&mut terminal, &mut app, config);
     leave_terminal(&mut terminal)?;
     result
 }
@@ -35,15 +38,24 @@ struct App {
     sessions: Vec<Session>,
     selected: usize,
     search: String,
+    active_session: Option<Session>,
+    detail_scroll: u16,
+    error: Option<String>,
 }
 
 fn run_app(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     app: &mut App,
+    config: &Config,
 ) -> Result<(), RuntimeErr> {
     loop {
         terminal
             .draw(|frame| {
+                if let Some(session) = app.active_session.as_ref() {
+                    render_session(frame, app, session);
+                    return;
+                }
+
                 let [header, list, footer] = Layout::vertical([
                     Constraint::Length(2),
                     Constraint::Min(1),
@@ -57,17 +69,18 @@ fn run_app(
                     Span::raw(app.search.as_str())
                 };
 
-                frame.render_widget(
-                    Paragraph::new(Line::from(vec![
-                        search,
-                        Span::raw("    Filter: "),
-                        Span::styled("[Cwd]", Style::default().fg(Color::LightMagenta)),
-                        Span::raw(" All    Sort: "),
-                        Span::styled("[Updated]", Style::default().add_modifier(Modifier::BOLD)),
-                        Span::raw(" Created"),
-                    ])),
-                    header,
-                );
+                let mut header_lines = vec![Line::from(vec![
+                    search,
+                    Span::raw("    Filter: "),
+                    Span::styled("[Cwd]", Style::default().fg(Color::LightMagenta)),
+                    Span::raw(" All    Sort: "),
+                    Span::styled("[Updated]", Style::default().add_modifier(Modifier::BOLD)),
+                    Span::raw(" Created"),
+                ])];
+                if let Some(error) = app.error.as_ref() {
+                    header_lines.push(Line::styled(error, Style::default().fg(Color::LightRed)));
+                }
+                frame.render_widget(Paragraph::new(header_lines), header);
 
                 let visible = app.visible_sessions();
                 let row_layout = RowLayout::new(list.width as usize, &visible);
@@ -82,7 +95,7 @@ fn run_app(
                 frame.render_widget(
                     Paragraph::new(Line::from(vec![
                         Span::styled("enter", Style::default().add_modifier(Modifier::BOLD)),
-                        Span::raw(" resume    "),
+                        Span::raw(" read    "),
                         Span::styled("esc", Style::default().add_modifier(Modifier::BOLD)),
                         Span::raw(" quit    "),
                         Span::styled("ctrl+c", Style::default().add_modifier(Modifier::BOLD)),
@@ -98,16 +111,42 @@ fn run_app(
         if let Event::Key(key) =
             event::read().map_err(|err| RuntimeErr::Generic(err.to_string()))?
         {
+            if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                break;
+            }
+
+            if app.active_session.is_some() {
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') => {
+                        app.active_session = None;
+                        app.detail_scroll = 0;
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        app.detail_scroll = app.detail_scroll.saturating_sub(1)
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        app.detail_scroll = app.detail_scroll.saturating_add(1)
+                    }
+                    KeyCode::PageUp => app.detail_scroll = app.detail_scroll.saturating_sub(10),
+                    KeyCode::PageDown => app.detail_scroll = app.detail_scroll.saturating_add(10),
+                    KeyCode::Home => app.detail_scroll = 0,
+                    _ => {}
+                }
+                continue;
+            }
+
             match key.code {
                 KeyCode::Esc => break,
-                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
+                KeyCode::Enter => app.open_selected(config),
                 KeyCode::Char(ch) => {
                     app.search.push(ch);
                     app.selected = 0;
+                    app.error = None;
                 }
                 KeyCode::Backspace => {
                     app.search.pop();
                     app.selected = 0;
+                    app.error = None;
                 }
                 KeyCode::Up => app.select_previous(),
                 KeyCode::Down => app.select_next(),
@@ -144,6 +183,97 @@ impl App {
             self.selected += 1;
         }
     }
+
+    fn open_selected(&mut self, config: &Config) {
+        let selected = self
+            .visible_sessions()
+            .get(self.selected)
+            .map(|session| (session.provider, session.id.clone()));
+        let Some((provider, session_id)) = selected else {
+            return;
+        };
+
+        match config.load_session(provider, session_id) {
+            Ok(session) => {
+                self.active_session = Some(session);
+                self.detail_scroll = 0;
+                self.error = None;
+            }
+            Err(err) => self.error = Some(format!("Unable to load session: {err:?}")),
+        }
+    }
+}
+
+fn render_session(frame: &mut ratatui::Frame, app: &App, session: &Session) {
+    let [header, body, footer] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Min(1),
+        Constraint::Length(2),
+    ])
+    .areas(frame.area());
+
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(vec![
+                Span::styled(
+                    provider_name(&session.provider),
+                    Style::default()
+                        .fg(Color::LightMagenta)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("  "),
+                Span::styled(&session.cwd, Style::default().add_modifier(Modifier::BOLD)),
+            ]),
+            Line::styled(&session.ts, Style::default().fg(Color::DarkGray)),
+        ]),
+        header,
+    );
+
+    let mut lines = Vec::new();
+    for message in session.messages.as_deref().unwrap_or_default() {
+        let color = match message.role.as_str() {
+            "user" => Color::LightCyan,
+            "assistant" => Color::LightGreen,
+            _ => Color::Gray,
+        };
+        lines.push(Line::from(vec![
+            Span::styled(
+                message.role.as_str(),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled(&message.ts, Style::default().fg(Color::DarkGray)),
+        ]));
+        lines.extend(message.text.lines().map(|line| Line::raw(line.to_string())));
+        lines.push(Line::default());
+    }
+    if lines.is_empty() {
+        lines.push(Line::styled(
+            "No readable user or assistant messages in this session.",
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+
+    frame.render_widget(
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .scroll((app.detail_scroll, 0)),
+        body,
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("up/down", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(" scroll    "),
+            Span::styled(
+                "page up/down",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" faster    "),
+            Span::styled("esc", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(" back"),
+        ])),
+        footer,
+    );
 }
 
 #[derive(Clone, Copy)]

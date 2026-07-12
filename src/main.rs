@@ -3,7 +3,7 @@ pub mod cli;
 pub mod tui;
 
 use crate::cli::run;
-use agent::provider::Provider;
+use agent::provider::{Provider, ProviderEnum};
 use agent::session::Session;
 use serde::Deserialize;
 use std::fs;
@@ -62,7 +62,7 @@ impl Config {
 
     fn from_json(data: &str) -> Result<Config, RuntimeErr> {
         let config: Config =
-            serde_json::from_str(&data).map_err(|err| RuntimeErr::Generic(err.to_string()))?;
+            serde_json::from_str(data).map_err(|err| RuntimeErr::Generic(err.to_string()))?;
         Ok(config)
     }
 
@@ -78,5 +78,25 @@ impl Config {
             }
             None => vec![],
         }
+    }
+
+    fn load_session(
+        &self,
+        provider_name: ProviderEnum,
+        session_id: String,
+    ) -> Result<Session, RuntimeErr> {
+        let provider = self
+            .providers
+            .as_ref()
+            .and_then(|providers| {
+                providers
+                    .iter()
+                    .find(|provider| provider.name == provider_name)
+            })
+            .ok_or_else(|| {
+                RuntimeErr::Generic(format!("provider {provider_name:?} is not configured"))
+            })?;
+
+        provider.load_session(session_id)
     }
 }
