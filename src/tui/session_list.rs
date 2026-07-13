@@ -60,9 +60,7 @@ pub(super) fn render_footer(frame: &mut Frame, area: Rect) {
         Paragraph::new(Line::from(vec![
             Span::styled("enter", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(" read    "),
-            Span::styled("esc", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(" quit    "),
-            Span::styled("ctrl+c", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled("esc/ctrl+c", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(" quit    "),
             Span::styled("up/down", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(" browse"),
