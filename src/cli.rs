@@ -28,7 +28,7 @@ pub fn run() -> Result<ExitCode> {
 
     let dir = env::current_dir()
         .context("failed to determine the current directory")?
-        .join("tests/.his");
+        .join(config::CONFIG_DIRECTORY_NAME);
     let config = config::load(dir)?;
     let providers = config.providers.as_deref().unwrap_or_default();
     let repository = SessionRepository::new(providers)?;

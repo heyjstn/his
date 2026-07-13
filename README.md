@@ -5,4 +5,14 @@
 
 I build this so I could view all my coding agents' history and resume whenever I want
 
+## Configuration
+
+Create `.his/config.toml` in the project directory:
+
+```toml
+[[providers]]
+name = "codex"
+dir = "/path/to/.codex/sessions"
+```
+
 WIP
