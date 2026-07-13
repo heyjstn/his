@@ -173,7 +173,7 @@ mod tests {
             "\n",
             r#"{"type":"message","id":"user-1","parentId":null,"timestamp":"2026-07-12T01:01:00Z","message":{"role":"user","content":[{"type":"text","text":"Hello"}],"timestamp":1}}"#,
             "\n",
-            r#"{"type":"message","id":"assistant-1","parentId":"user-1","timestamp":"2026-07-12T01:02:00Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Checking the request","thinkingSignature":"signature"},{"type":"text","text":"Hi there"}],"api":"responses","provider":"test","model":"test-model","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"input":0.0,"output":0.0,"cacheRead":0.0,"cacheWrite":0.0,"total":0.0}},"stopReason":"stop","timestamp":2,"responseId":"response-1"}}"#,
+            r#"{"type":"message","id":"assistant-1","parentId":"user-1","timestamp":"2026-07-12T01:02:00Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Checking the request","thinkingSignature":"signature"},{"type":"toolCall","id":"call-1","name":"read","arguments":{}},{"type":"toolCall","id":"call-2","name":"edit","arguments":{}},{"type":"text","text":"Hi there"}],"api":"responses","provider":"test","model":"test-model","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"input":0.0,"output":0.0,"cacheRead":0.0,"cacheWrite":0.0,"total":0.0}},"stopReason":"stop","timestamp":2,"responseId":"response-1"}}"#,
         );
         let (dir, provider) = test_provider(ProviderEnum::Pi, "session.jsonl", data);
 
@@ -184,12 +184,14 @@ mod tests {
 
         assert_eq!(session.first_message, "Hello");
         let messages = session.messages.unwrap();
-        assert_eq!(messages.len(), 3);
+        assert_eq!(messages.len(), 4);
         assert_eq!(messages[0].role, "user");
         assert_eq!(messages[1].text, "Checking the request");
         assert_eq!(messages[1].phase.as_deref(), Some("commentary"));
-        assert_eq!(messages[2].text, "Hi there");
-        assert_eq!(messages[2].phase, None);
+        assert_eq!(messages[2].text, "edit");
+        assert_eq!(messages[2].phase.as_deref(), Some("tool_call"));
+        assert_eq!(messages[3].text, "Hi there");
+        assert_eq!(messages[3].phase, None);
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -223,6 +225,28 @@ mod tests {
                 }
             }
             {
+                "timestamp": "2026-07-12T01:02:30Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call",
+                    "id": "tool-call",
+                    "name": "exec_command",
+                    "arguments": "{}",
+                    "call_id": "call-1"
+                }
+            }
+            {
+                "timestamp": "2026-07-12T01:02:45Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "custom_tool_call",
+                    "id": "edit-call",
+                    "name": "apply_patch",
+                    "input": "*** Begin Patch",
+                    "call_id": "call-2"
+                }
+            }
+            {
                 "timestamp": "2026-07-12T01:03:00Z",
                 "type": "response_item",
                 "payload": {
@@ -250,9 +274,11 @@ mod tests {
         let messages = session.messages.unwrap();
         assert_eq!(messages[0].text, "Read this");
         assert_eq!(messages[1].phase.as_deref(), Some("commentary"));
-        assert_eq!(messages.len(), 3);
-        assert_eq!(messages[2].text, "Implementation plan");
-        assert_eq!(messages[2].phase.as_deref(), Some("final_answer"));
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages[2].text, "apply_patch");
+        assert_eq!(messages[2].phase.as_deref(), Some("tool_call"));
+        assert_eq!(messages[3].text, "Implementation plan");
+        assert_eq!(messages[3].phase.as_deref(), Some("final_answer"));
         fs::remove_dir_all(dir).unwrap();
     }
 

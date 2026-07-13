@@ -1,4 +1,4 @@
-use crate::agent::provider::ProviderEnum;
+use crate::agent::provider::{COMMENTARY_PHASE, ProviderEnum, TOOL_CALL_PHASE};
 use crate::agent::session::{Session, SessionMessage};
 use crate::renderer::render_markdown;
 use ratatui::Frame;
@@ -9,8 +9,8 @@ use ratatui::widgets::{Paragraph, Wrap};
 
 const USER_ROLE: &str = "user";
 const ASSISTANT_ROLE: &str = "assistant";
-const COMMENTARY_PHASE: &str = "commentary";
 const COMMENTARY_BULLET: &str = "• ";
+const TOOL_CALL_MARKER: &str = "✳ ";
 const EMPTY_SESSION_MESSAGE: &str = "No readable user or assistant messages in this session.";
 const COMMENTARY_FOREGROUND: Color = Color::Gray;
 
@@ -117,18 +117,24 @@ fn message_header(message: &SessionMessage) -> Line<'_> {
 }
 
 fn is_commentary(message: &SessionMessage) -> bool {
-    message.role == ASSISTANT_ROLE && message.phase.as_deref() == Some(COMMENTARY_PHASE)
+    message.role == ASSISTANT_ROLE
+        && matches!(
+            message.phase.as_deref(),
+            Some(COMMENTARY_PHASE | TOOL_CALL_PHASE)
+        )
 }
 
 fn commentary_lines(message: &SessionMessage) -> Vec<Line<'_>> {
     let mut rendered = message_text_lines(message);
-    let Some(first_line) = rendered.first_mut() else {
-        return vec![Line::styled(
-            COMMENTARY_BULLET,
-            assistant_text_style(message),
-        )];
+    let marker = if message.phase.as_deref() == Some(TOOL_CALL_PHASE) {
+        TOOL_CALL_MARKER
+    } else {
+        COMMENTARY_BULLET
     };
-    first_line.spans.insert(0, Span::raw(COMMENTARY_BULLET));
+    let Some(first_line) = rendered.first_mut() else {
+        return vec![Line::styled(marker, assistant_text_style(message))];
+    };
+    first_line.spans.insert(0, Span::raw(marker));
     rendered
 }
 
@@ -320,6 +326,24 @@ mod tests {
     }
 
     #[test]
+    fn renders_edit_tool_calls_in_commentary_with_a_star_marker() {
+        let messages = [
+            message(ProviderEnum::Codex, "assistant", "commentary", "Checking"),
+            message(ProviderEnum::Codex, "assistant", "tool_call", "apply_patch"),
+            message(ProviderEnum::Pi, "assistant", "tool_call", "edit"),
+        ];
+
+        let rendered_lines = rendered_lines(&messages, true);
+
+        assert_eq!(role_header_count(&rendered_lines, ASSISTANT_ROLE), 1);
+        assert!(rendered_lines.iter().any(|line| line == "• Checking"));
+        assert!(rendered_lines.iter().any(|line| line == "✳ apply_patch"));
+        assert!(rendered_lines.iter().any(|line| line == "✳ edit"));
+        assert!(rendered_lines.iter().all(|line| line != "• apply_patch"));
+        assert!(rendered_lines.iter().all(|line| line != "• edit"));
+    }
+
+    #[test]
     fn does_not_apply_codex_assistant_styles_to_other_messages() {
         let messages = [
             message(ProviderEnum::Pi, "assistant", "final_answer", "Answer"),
@@ -362,6 +386,12 @@ mod tests {
                 "final_answer",
                 "Visible answer",
             ),
+            message(
+                ProviderEnum::Pi,
+                "assistant",
+                "tool_call",
+                "Hidden tool call",
+            ),
         ];
 
         let visible_lines = rendered_lines(&messages, false);
@@ -372,6 +402,11 @@ mod tests {
                 .any(|line| line.contains("Hidden update"))
         );
         assert!(visible_lines.iter().any(|line| line == "Visible answer"));
+        assert!(
+            !visible_lines
+                .iter()
+                .any(|line| line.contains("Hidden tool call"))
+        );
 
         let commentary_only = [message(
             ProviderEnum::Codex,

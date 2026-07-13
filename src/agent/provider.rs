@@ -10,6 +10,9 @@ use std::path::{Path, PathBuf};
 pub use codex::CodexMessage;
 pub use pi::PiMessage;
 
+pub(crate) const COMMENTARY_PHASE: &str = "commentary";
+pub(crate) const TOOL_CALL_PHASE: &str = "tool_call";
+
 #[derive(Clone, Copy, Deserialize, Debug, Eq, Hash, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderEnum {
