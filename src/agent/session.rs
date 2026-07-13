@@ -281,16 +281,9 @@ mod tests {
         let messages = session.messages.unwrap();
         assert_eq!(messages[0].text, "Read this");
         assert_eq!(messages[1].phase.as_deref(), Some("commentary"));
-        assert_eq!(messages.len(), 4);
-        assert_eq!(messages[2].text, "apply patch");
-        assert_eq!(messages[2].phase.as_deref(), Some("tool_call"));
-        assert_eq!(messages[2].tool_path, None);
-        assert_eq!(
-            messages[2].tool_contents,
-            ["*** Begin Patch\n+edited content\n*** End Patch"]
-        );
-        assert_eq!(messages[3].text, "Implementation plan");
-        assert_eq!(messages[3].phase.as_deref(), Some("final_answer"));
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[2].text, "Implementation plan");
+        assert_eq!(messages[2].phase.as_deref(), Some("final_answer"));
         fs::remove_dir_all(dir).unwrap();
     }
 

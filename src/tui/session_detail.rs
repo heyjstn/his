@@ -389,16 +389,10 @@ mod tests {
     }
 
     #[test]
-    fn renders_edit_path_and_content_in_commentary() {
+    fn renders_pi_edit_path_and_fenced_content_in_commentary() {
         const PI_PATH: &str = "/Users/triluu/dotfiles/nvim/lua/plugins/lsp.lua";
         let messages = [
             message(ProviderEnum::Codex, "assistant", "commentary", "Checking"),
-            edit_message(
-                ProviderEnum::Codex,
-                "apply patch",
-                None,
-                &["*** Begin Patch\n+codex edit\n*** End Patch"],
-            ),
             edit_message(
                 ProviderEnum::Pi,
                 "edit",
@@ -412,20 +406,6 @@ mod tests {
 
         assert_eq!(role_header_count(&rendered_lines, ASSISTANT_ROLE), 1);
         assert!(rendered_lines.iter().any(|line| line == "• Checking"));
-        let codex_heading_index = rendered_lines
-            .iter()
-            .position(|line| line == "✳ apply patch")
-            .unwrap();
-        assert_eq!(
-            &rendered_lines[codex_heading_index + 1..codex_heading_index + 6],
-            [
-                CODE_FENCE,
-                "*** Begin Patch",
-                "+codex edit",
-                "*** End Patch",
-                CODE_FENCE,
-            ]
-        );
         assert!(
             rendered_lines
                 .iter()

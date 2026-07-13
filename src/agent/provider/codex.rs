@@ -1,11 +1,8 @@
-use crate::agent::provider::{AgentMessage, FromProviderMessage, TOOL_CALL_PHASE};
+use crate::agent::provider::{AgentMessage, FromProviderMessage};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde_json::Value;
 use std::path::Path;
-
-const APPLY_PATCH_TOOL: &str = "apply_patch";
-const APPLY_PATCH_LABEL: &str = "apply patch";
 
 #[derive(Deserialize, Debug)]
 pub struct CodexMessage {
@@ -33,7 +30,6 @@ impl From<CodexMessage> for AgentMessage {
     fn from(value: CodexMessage) -> Self {
         let payload_type = string_field(&value.payload, "type");
         let is_session = value.typ == "session_meta";
-        let is_edit_tool_call = value.typ == "response_item" && is_edit_tool_call(&value.payload);
         let (role, text) = match (value.typ.as_str(), payload_type) {
             ("event_msg", Some("user_message")) => (
                 Some("user".to_string()),
@@ -49,10 +45,6 @@ impl From<CodexMessage> for AgentMessage {
                 let text = output_text(&value.payload);
                 (text.as_ref().map(|_| "assistant".to_string()), text)
             }
-            ("response_item", _) if is_edit_tool_call => (
-                Some("assistant".to_string()),
-                Some(APPLY_PATCH_LABEL.to_string()),
-            ),
             _ => (None, None),
         };
         let is_message = role.is_some();
@@ -85,31 +77,16 @@ impl From<CodexMessage> for AgentMessage {
                 .map(str::to_string),
             role,
             text,
-            phase: if is_edit_tool_call {
-                Some(TOOL_CALL_PHASE.to_string())
-            } else {
-                string_field(&value.payload, "phase").map(str::to_string)
-            },
+            phase: string_field(&value.payload, "phase").map(str::to_string),
             provider: string_field(&value.payload, "model_provider").map(str::to_string),
             model: string_field(&value.payload, "model").map(str::to_string),
             tool_call_id: string_field(&value.payload, "call_id").map(str::to_string),
             tool_name: string_field(&value.payload, "name").map(str::to_string),
             tool_path: None,
-            tool_contents: if is_edit_tool_call {
-                string_field(&value.payload, "input")
-                    .map(|input| vec![input.to_string()])
-                    .unwrap_or_default()
-            } else {
-                Vec::new()
-            },
+            tool_contents: Vec::new(),
             is_error: None,
         }
     }
-}
-
-fn is_edit_tool_call(payload: &Value) -> bool {
-    string_field(payload, "type") == Some("custom_tool_call")
-        && string_field(payload, "name") == Some(APPLY_PATCH_TOOL)
 }
 
 fn string_field<'a>(value: &'a Value, field: &str) -> Option<&'a str> {
@@ -207,7 +184,7 @@ fn is_same_utterance(left: &AgentMessage, right: &AgentMessage) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{CodexMessage, convert_messages};
-    use crate::agent::provider::{AgentMessage, TOOL_CALL_PHASE};
+    use crate::agent::provider::AgentMessage;
 
     #[test]
     fn converts_assistant_response_output_text() {
@@ -254,23 +231,9 @@ mod tests {
     }
 
     #[test]
-    fn converts_only_apply_patch_calls_to_commentary_messages() {
-        let edit = parse_message(
-            r#"{"timestamp":"2026-07-13T01:00:00Z","type":"response_item","payload":{"type":"custom_tool_call","id":"custom","name":"apply_patch","input":"*** Begin Patch","call_id":"call-2"}}"#,
-        );
-
-        let converted = AgentMessage::from(edit);
-
-        assert_eq!(converted.typ, "message");
-        assert_eq!(converted.role.as_deref(), Some("assistant"));
-        assert_eq!(converted.text.as_deref(), Some("apply patch"));
-        assert_eq!(converted.phase.as_deref(), Some(TOOL_CALL_PHASE));
-        assert_eq!(converted.tool_call_id.as_deref(), Some("call-2"));
-        assert_eq!(converted.tool_name.as_deref(), Some("apply_patch"));
-        assert_eq!(converted.tool_path, None);
-        assert_eq!(converted.tool_contents, ["*** Begin Patch"]);
-
+    fn skips_all_tool_calls() {
         for payload in [
+            r#"{"type":"custom_tool_call","name":"apply_patch","input":"*** Begin Patch"}"#,
             r#"{"type":"function_call","name":"exec_command"}"#,
             r#"{"type":"function_call","name":"apply_patch"}"#,
             r#"{"type":"custom_tool_call","name":"exec_command"}"#,
