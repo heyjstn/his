@@ -257,6 +257,8 @@ const ASSISTANT_ROLE: &str = "assistant";
 const CODEX_COMMENTARY_PHASE: &str = "commentary";
 const COMMENTARY_BULLET: &str = "• ";
 const EMPTY_SESSION_MESSAGE: &str = "No readable user or assistant messages in this session.";
+const CODEX_ASSISTANT_BACKGROUND: Color = Color::DarkGray;
+const CODEX_COMMENTARY_FOREGROUND: Color = Color::Gray;
 
 fn session_message_lines(messages: &[SessionMessage]) -> Vec<Line<'_>> {
     if messages.is_empty() {
@@ -276,7 +278,7 @@ fn session_message_lines(messages: &[SessionMessage]) -> Vec<Line<'_>> {
                 lines.extend(commentary_lines(commentary));
             }
         } else {
-            lines.extend(render_markdown(&message.text).lines);
+            lines.extend(message_text_lines(message));
         }
         lines.push(Line::default());
     }
@@ -307,12 +309,39 @@ fn is_codex_commentary(message: &SessionMessage) -> bool {
 }
 
 fn commentary_lines(message: &SessionMessage) -> Vec<Line<'_>> {
-    let mut rendered = render_markdown(&message.text).lines;
+    let mut rendered = message_text_lines(message);
     let Some(first_line) = rendered.first_mut() else {
-        return vec![Line::from(COMMENTARY_BULLET)];
+        return vec![Line::styled(
+            COMMENTARY_BULLET,
+            codex_assistant_text_style(message),
+        )];
     };
     first_line.spans.insert(0, Span::raw(COMMENTARY_BULLET));
     rendered
+}
+
+fn message_text_lines(message: &SessionMessage) -> Vec<Line<'_>> {
+    let style = codex_assistant_text_style(message);
+    render_markdown(&message.text)
+        .lines
+        .into_iter()
+        .map(|mut line| {
+            line.style = style.patch(line.style);
+            line
+        })
+        .collect()
+}
+
+fn codex_assistant_text_style(message: &SessionMessage) -> Style {
+    if message.provider != ProviderEnum::Codex || message.role != ASSISTANT_ROLE {
+        return Style::default();
+    }
+
+    if is_codex_commentary(message) {
+        return Style::default().fg(CODEX_COMMENTARY_FOREGROUND);
+    }
+
+    Style::default().bg(CODEX_ASSISTANT_BACKGROUND)
 }
 
 #[derive(Clone, Copy)]
@@ -458,10 +487,13 @@ fn leave_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<(
 
 #[cfg(test)]
 mod tests {
-    use super::{ASSISTANT_ROLE, EMPTY_SESSION_MESSAGE, session_message_lines};
+    use super::{
+        ASSISTANT_ROLE, CODEX_ASSISTANT_BACKGROUND, CODEX_COMMENTARY_FOREGROUND,
+        EMPTY_SESSION_MESSAGE, session_message_lines,
+    };
     use crate::agent::provider::ProviderEnum;
     use crate::agent::session::SessionMessage;
-    use ratatui::style::Modifier;
+    use ratatui::style::{Color, Modifier};
 
     #[test]
     fn renders_session_message_markdown() {
@@ -480,6 +512,7 @@ mod tests {
         assert_eq!(lines[0].spans[0].content, "assistant");
         assert_eq!(lines[1].spans[0].content, "A ");
         assert_eq!(lines[1].spans[1].content, "bold");
+        assert_eq!(lines[1].style.bg, Some(CODEX_ASSISTANT_BACKGROUND));
         assert!(
             lines[1].spans[1]
                 .style
@@ -546,6 +579,8 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("Running the focused tests") && line.contains('•'))
         );
+        assert_eq!(lines[1].style.fg, Some(CODEX_COMMENTARY_FOREGROUND));
+        assert_eq!(lines[2].style.fg, Some(CODEX_COMMENTARY_FOREGROUND));
     }
 
     #[test]
@@ -597,9 +632,39 @@ mod tests {
         ];
 
         let rendered_lines = rendered_lines(&messages);
+        let lines = session_message_lines(&messages);
 
         assert_eq!(role_header_count(&rendered_lines, ASSISTANT_ROLE), 2);
         assert!(rendered_lines.iter().all(|line| !line.contains('•')));
+        assert!(lines.iter().all(|line| line.style.bg.is_none()));
+    }
+
+    #[test]
+    fn does_not_apply_codex_assistant_styles_to_other_messages() {
+        let messages = [
+            message(ProviderEnum::Pi, "assistant", "final_answer", "Answer"),
+            message(ProviderEnum::Codex, "user", "", "Question"),
+        ];
+
+        let lines = session_message_lines(&messages);
+
+        for line in [&lines[1], &lines[4]] {
+            assert!(line.style.fg.is_none());
+            assert!(line.style.bg.is_none());
+        }
+    }
+
+    #[test]
+    fn preserves_markdown_colors_over_codex_message_styles() {
+        let messages = [
+            message(ProviderEnum::Codex, "assistant", "commentary", "## Update"),
+            message(ProviderEnum::Codex, "assistant", "final_answer", "# Answer"),
+        ];
+
+        let lines = session_message_lines(&messages);
+
+        assert_eq!(lines[1].style.fg, Some(Color::Cyan));
+        assert_eq!(lines[4].style.bg, Some(Color::Cyan));
     }
 
     fn message(provider: ProviderEnum, role: &str, phase: &str, text: &str) -> SessionMessage {
