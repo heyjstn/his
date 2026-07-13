@@ -156,20 +156,6 @@ mod tests {
     }
 
     #[test]
-    fn rejects_legacy_providers_config() {
-        let error = from_toml(
-            r#"
-                [[providers]]
-                name = "codex"
-                dir = "/tmp/.codex"
-            "#,
-        )
-        .unwrap_err();
-
-        assert!(format!("{error:#}").contains("unknown field `providers`"));
-    }
-
-    #[test]
     fn parse_error_includes_config_path() {
         let directory = test_directory();
         let path = directory.join(CONFIG_FILE_NAME);

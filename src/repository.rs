@@ -1,7 +1,7 @@
 use crate::agent::AgentKind;
 use crate::config::AgentConfig;
 use crate::session::{SessionDetail, SessionLocator, SessionSummary};
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Result};
 use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::fmt;
@@ -21,9 +21,6 @@ impl SessionCatalog {
     pub(crate) fn warning_message(&self) -> Option<String> {
         match self.warnings.len() {
             0 => None,
-            1 => {
-                Some("Skipped 1 unreadable session source; details were written to stderr.".into())
-            }
             count => Some(format!(
                 "Skipped {count} unreadable session sources; details were written to stderr."
             )),
@@ -200,7 +197,7 @@ fn collect_discovery(entries: impl IntoIterator<Item = DiscoveryEntry>) -> Sessi
 
 #[cfg(test)]
 mod tests {
-    use super::{RepositoryWarning, SessionRepository, collect_discovery};
+    use super::{collect_discovery, RepositoryWarning, SessionRepository};
     use crate::agent::AgentKind;
     use crate::config::AgentConfig;
     use std::fs;
