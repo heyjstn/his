@@ -4,7 +4,6 @@ use serde::Deserialize;
 use std::fs;
 use std::path::Path;
 
-pub(crate) const CONFIG_DIRECTORY_NAME: &str = ".his";
 const CONFIG_FILE_NAME: &str = "config.toml";
 
 #[derive(Deserialize, Debug)]
