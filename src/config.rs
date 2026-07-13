@@ -117,6 +117,10 @@ mod tests {
                 dir = "$PWD/tests/.pi/agent/sessions"
 
                 [[agents]]
+                kind = "claude"
+                dir = "$HOME/.claude/projects"
+
+                [[agents]]
                 kind = "codex"
                 dir = "$HOME/.codex/sessions"
             "#,
@@ -134,6 +138,10 @@ mod tests {
         );
         assert_eq!(
             config.agents[1].directory,
+            PathBuf::from(TEST_HOME).join(".claude/projects")
+        );
+        assert_eq!(
+            config.agents[2].directory,
             PathBuf::from(TEST_HOME).join(".codex/sessions")
         );
     }

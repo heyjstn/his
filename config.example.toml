@@ -1,4 +1,8 @@
 [[agents]]
+kind = "claude"
+dir = "$HOME/.claude/projects"
+
+[[agents]]
 kind = "codex"
 dir = "$HOME/.codex/sessions"
 

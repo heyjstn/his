@@ -1,3 +1,4 @@
+mod claude;
 mod codex;
 mod pi;
 
@@ -10,6 +11,7 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
+use claude::ClaudeRecord;
 use codex::CodexRecord;
 use pi::PiRecord;
 
@@ -18,6 +20,7 @@ const EMPTY_SESSION_MESSAGE: &str = "(no text messages)";
 #[derive(Clone, Copy, Deserialize, Debug, Eq, Hash, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum AgentKind {
+    Claude,
     Codex,
     Pi,
 }
@@ -25,6 +28,7 @@ pub(crate) enum AgentKind {
 impl AgentKind {
     pub(crate) fn parse_summary(self, path: &Path) -> Result<ParsedSessionSummary> {
         match self {
+            Self::Claude => ClaudeRecord::parse_summary(path),
             Self::Codex => CodexRecord::parse_summary(path),
             Self::Pi => PiRecord::parse_summary(path),
         }
@@ -32,6 +36,7 @@ impl AgentKind {
 
     pub(crate) fn parse_detail(self, path: &Path) -> Result<ParsedSession> {
         match self {
+            Self::Claude => ClaudeRecord::parse_session(path),
             Self::Codex => CodexRecord::parse_session(path),
             Self::Pi => PiRecord::parse_session(path),
         }
@@ -41,6 +46,7 @@ impl AgentKind {
 impl fmt::Display for AgentKind {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Claude => formatter.write_str("Claude Code"),
             Self::Codex => formatter.write_str("Codex"),
             Self::Pi => formatter.write_str("Pi"),
         }
@@ -186,6 +192,7 @@ mod tests {
 
     #[test]
     fn formats_agent_names_for_display() {
+        assert_eq!(AgentKind::Claude.to_string(), "Claude Code");
         assert_eq!(AgentKind::Codex.to_string(), "Codex");
         assert_eq!(AgentKind::Pi.to_string(), "Pi");
     }
