@@ -24,6 +24,13 @@ pub struct Provider {
 }
 
 pub trait FromProviderMessage: Sized + DeserializeOwned {
+    fn into_agent_messages(self) -> Vec<AgentMessage>
+    where
+        AgentMessage: From<Self>,
+    {
+        vec![self.into()]
+    }
+
     fn from_message_str(s: &str) -> Result<AgentMessage>
     where
         AgentMessage: From<Self>,
@@ -43,19 +50,18 @@ pub trait FromProviderMessage: Sized + DeserializeOwned {
         AgentMessage: From<Self>,
     {
         let file = Self::read_to_string(path)?;
-        serde_json::Deserializer::from_str(&file)
-            .into_iter::<Self>()
-            .map(|message| {
-                message
-                    .map(Into::into)
-                    .with_context(|| format!("failed to parse session file {}", path.display()))
-            })
-            .collect()
+        let mut converted = Vec::new();
+        for message in serde_json::Deserializer::from_str(&file).into_iter::<Self>() {
+            let message = message
+                .with_context(|| format!("failed to parse session file {}", path.display()))?;
+            converted.extend(message.into_agent_messages());
+        }
+        Ok(converted)
     }
 }
 
 /// Generic message for all coding agents message
-#[derive(Deserialize, Debug)]
+#[derive(Clone, Deserialize, Debug)]
 pub struct AgentMessage {
     #[serde(rename = "type")]
     pub typ: String,
@@ -65,6 +71,7 @@ pub struct AgentMessage {
     pub cwd: Option<String>,
     pub role: Option<String>,
     pub text: Option<String>,
+    pub phase: Option<String>,
     pub provider: Option<String>,
     pub model: Option<String>,
     pub tool_call_id: Option<String>,

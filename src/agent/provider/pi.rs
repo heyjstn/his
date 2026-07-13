@@ -2,6 +2,9 @@ use crate::agent::provider::{AgentMessage, FromProviderMessage};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+const COMMENTARY_PHASE: &str = "commentary";
+const THINKING_CONTENT_TYPE: &str = "thinking";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum PiMessage {
@@ -164,7 +167,32 @@ pub struct ToolResultDetails {
     pub first_changed_line: Option<i64>,
 }
 
-impl FromProviderMessage for PiMessage {}
+impl FromProviderMessage for PiMessage {
+    fn into_agent_messages(self) -> Vec<AgentMessage> {
+        let PiMessage::Message(event) = &self else {
+            return vec![self.into()];
+        };
+        let Message::Assistant(assistant) = &event.message else {
+            return vec![self.into()];
+        };
+        let Some(thinking) = content_thinking(&assistant.content) else {
+            return vec![self.into()];
+        };
+
+        let message = AgentMessage::from(self);
+        let commentary = AgentMessage {
+            id: format!("{}:{THINKING_CONTENT_TYPE}", message.id),
+            text: Some(thinking),
+            phase: Some(COMMENTARY_PHASE.to_string()),
+            ..message.clone()
+        };
+        if message.text.is_none() {
+            return vec![commentary];
+        }
+
+        vec![commentary, message]
+    }
+}
 
 impl From<PiMessage> for AgentMessage {
     fn from(value: PiMessage) -> Self {
@@ -177,6 +205,7 @@ impl From<PiMessage> for AgentMessage {
                 cwd: Some(event.cwd),
                 role: None,
                 text: None,
+                phase: None,
                 provider: None,
                 model: None,
                 tool_call_id: None,
@@ -191,6 +220,7 @@ impl From<PiMessage> for AgentMessage {
                 cwd: None,
                 role: None,
                 text: None,
+                phase: None,
                 provider: Some(event.provider),
                 model: Some(event.model_id),
                 tool_call_id: None,
@@ -205,6 +235,7 @@ impl From<PiMessage> for AgentMessage {
                 cwd: None,
                 role: None,
                 text: Some(event.thinking_level),
+                phase: None,
                 provider: None,
                 model: None,
                 tool_call_id: None,
@@ -254,6 +285,7 @@ impl From<PiMessage> for AgentMessage {
                     cwd: None,
                     role,
                     text,
+                    phase: None,
                     provider,
                     model,
                     tool_call_id,
@@ -278,9 +310,50 @@ fn content_text(content: &[ContentPart]) -> Option<String> {
     if text.is_empty() { None } else { Some(text) }
 }
 
+fn content_thinking(content: &[ContentPart]) -> Option<String> {
+    let thinking = content
+        .iter()
+        .filter_map(|part| match part {
+            ContentPart::Thinking(content) => Some(content.thinking.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if thinking.is_empty() {
+        None
+    } else {
+        Some(thinking)
+    }
+}
+
 fn first_tool_call(content: &[ContentPart]) -> Option<&ToolCallContent> {
     content.iter().find_map(|part| match part {
         ContentPart::ToolCall(content) => Some(content),
         _ => None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{COMMENTARY_PHASE, PiMessage};
+    use crate::agent::provider::FromProviderMessage;
+
+    #[test]
+    fn converts_thinking_only_assistant_content_to_commentary() {
+        let message = serde_json::from_str::<PiMessage>(
+            r#"{"type":"message","id":"assistant-1","parentId":"user-1","timestamp":"2026-07-12T01:02:00Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Inspecting the repository","thinkingSignature":"signature"},{"type":"toolCall","id":"call-1","name":"read","arguments":{}}],"api":"responses","provider":"test","model":"test-model","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"input":0.0,"output":0.0,"cacheRead":0.0,"cacheWrite":0.0,"total":0.0}},"stopReason":"toolUse","timestamp":2,"responseId":"response-1"}}"#,
+        )
+        .unwrap();
+
+        let converted = message.into_agent_messages();
+
+        assert_eq!(converted.len(), 1);
+        assert_eq!(
+            converted[0].text.as_deref(),
+            Some("Inspecting the repository")
+        );
+        assert_eq!(converted[0].phase.as_deref(), Some(COMMENTARY_PHASE));
+        assert_eq!(converted[0].tool_name.as_deref(), Some("read"));
+    }
 }

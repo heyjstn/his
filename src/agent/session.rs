@@ -23,6 +23,7 @@ pub struct SessionMessage {
     pub ts: String,
     pub role: String,
     pub text: String,
+    pub phase: Option<String>,
 }
 
 #[derive(Debug)]
@@ -130,6 +131,7 @@ fn parse_session(provider: &Provider, path: &Path, include_messages: bool) -> Re
                     .clone()
                     .unwrap_or_else(|| "message".to_string()),
                 text: message.text.clone().unwrap_or_default(),
+                phase: message.phase.clone(),
             })
             .collect()
     });
@@ -171,7 +173,7 @@ mod tests {
             "\n",
             r#"{"type":"message","id":"user-1","parentId":null,"timestamp":"2026-07-12T01:01:00Z","message":{"role":"user","content":[{"type":"text","text":"Hello"}],"timestamp":1}}"#,
             "\n",
-            r#"{"type":"message","id":"assistant-1","parentId":"user-1","timestamp":"2026-07-12T01:02:00Z","message":{"role":"assistant","content":[{"type":"text","text":"Hi there"}],"api":"responses","provider":"test","model":"test-model","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"input":0.0,"output":0.0,"cacheRead":0.0,"cacheWrite":0.0,"total":0.0}},"stopReason":"stop","timestamp":2,"responseId":"response-1"}}"#,
+            r#"{"type":"message","id":"assistant-1","parentId":"user-1","timestamp":"2026-07-12T01:02:00Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Checking the request","thinkingSignature":"signature"},{"type":"text","text":"Hi there"}],"api":"responses","provider":"test","model":"test-model","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"input":0.0,"output":0.0,"cacheRead":0.0,"cacheWrite":0.0,"total":0.0}},"stopReason":"stop","timestamp":2,"responseId":"response-1"}}"#,
         );
         let (dir, provider) = test_provider(ProviderEnum::Pi, "session.jsonl", data);
 
@@ -182,9 +184,12 @@ mod tests {
 
         assert_eq!(session.first_message, "Hello");
         let messages = session.messages.unwrap();
-        assert_eq!(messages.len(), 2);
+        assert_eq!(messages.len(), 3);
         assert_eq!(messages[0].role, "user");
-        assert_eq!(messages[1].text, "Hi there");
+        assert_eq!(messages[1].text, "Checking the request");
+        assert_eq!(messages[1].phase.as_deref(), Some("commentary"));
+        assert_eq!(messages[2].text, "Hi there");
+        assert_eq!(messages[2].phase, None);
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -208,6 +213,31 @@ mod tests {
                     "message": "Read this"
                 }
             }
+            {
+                "timestamp": "2026-07-12T01:02:00Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "agent_message",
+                    "message": "Working on it",
+                    "phase": "commentary"
+                }
+            }
+            {
+                "timestamp": "2026-07-12T01:03:00Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "id": "final-answer",
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": "Implementation plan"
+                        }
+                    ],
+                    "phase": "final_answer"
+                }
+            }
         "#;
         let (dir, provider) = test_provider(ProviderEnum::Codex, "session.jsonl", data);
 
@@ -217,7 +247,12 @@ mod tests {
             .unwrap();
 
         assert_eq!(session.cwd, "/tmp/codex");
-        assert_eq!(session.messages.unwrap()[0].text, "Read this");
+        let messages = session.messages.unwrap();
+        assert_eq!(messages[0].text, "Read this");
+        assert_eq!(messages[1].phase.as_deref(), Some("commentary"));
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[2].text, "Implementation plan");
+        assert_eq!(messages[2].phase.as_deref(), Some("final_answer"));
         fs::remove_dir_all(dir).unwrap();
     }
 
