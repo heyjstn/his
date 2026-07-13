@@ -1,6 +1,4 @@
-use super::provider::{
-    AgentMessage, CodexMessage, FromProviderMessage, PiMessage, Provider, ProviderEnum,
-};
+use super::provider::{Provider, ProviderEnum};
 use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
 use std::collections::HashSet;
@@ -70,7 +68,7 @@ impl<'a> SessionRepository<'a> {
 }
 
 fn list_provider_sessions(provider: &Provider) -> Result<Vec<Session>> {
-    let file_paths = super::provider::walk_dir(&provider.dir)?;
+    let file_paths = provider.get_session_paths()?;
 
     Ok(file_paths
         .iter()
@@ -79,7 +77,7 @@ fn list_provider_sessions(provider: &Provider) -> Result<Vec<Session>> {
 }
 
 fn load_provider_session(provider: &Provider, session_id: &str) -> Result<Session> {
-    let file_paths = super::provider::walk_dir(&provider.dir)?;
+    let file_paths = provider.get_session_paths()?;
     let mut parse_error = None;
 
     for path in file_paths {
@@ -90,7 +88,6 @@ fn load_provider_session(provider: &Provider, session_id: &str) -> Result<Sessio
                 continue;
             }
         };
-
         if session.id == session_id {
             return Ok(session);
         }
@@ -107,7 +104,7 @@ fn load_provider_session(provider: &Provider, session_id: &str) -> Result<Sessio
 }
 
 fn parse_session(provider: &Provider, path: &Path, include_messages: bool) -> Result<Session> {
-    let data = parse_messages(provider, path)?;
+    let data = provider.parse(path)?;
     let initialized_message = data
         .iter()
         .find(|message| message.typ == "session")
@@ -152,13 +149,6 @@ fn parse_session(provider: &Provider, path: &Path, include_messages: bool) -> Re
         messages,
         first_message,
     })
-}
-
-fn parse_messages(provider: &Provider, path: &Path) -> Result<Vec<AgentMessage>> {
-    match provider.name {
-        ProviderEnum::Codex => CodexMessage::parse_vec(path),
-        ProviderEnum::Pi => PiMessage::parse_vec(path),
-    }
 }
 
 #[cfg(test)]
@@ -310,7 +300,9 @@ mod tests {
         let earlier_data = r#"{"type":"session","version":3,"id":"earlier","timestamp":"2026-07-11T01:00:00Z","cwd":"/tmp/earlier"}"#;
         let later_data = r#"{"type":"session","version":3,"id":"later","timestamp":"2026-07-12T01:00:00Z","cwd":"/tmp/later"}"#;
         let (dir, provider) = test_provider(ProviderEnum::Pi, "earlier.jsonl", earlier_data);
-        fs::write(dir.join("later.jsonl"), later_data).unwrap();
+        let nested_dir = dir.join("nested");
+        fs::create_dir(&nested_dir).unwrap();
+        fs::write(nested_dir.join("later.jsonl"), later_data).unwrap();
         let providers = [provider];
         let repository = SessionRepository::new(&providers).unwrap();
 

@@ -711,6 +711,7 @@ dependencies = [
  "shellexpand",
  "toml",
  "tui-markdown",
+ "walkdir",
 ]
 
 [[package]]

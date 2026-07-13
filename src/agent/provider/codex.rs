@@ -13,7 +13,7 @@ pub struct CodexMessage {
 }
 
 impl FromProviderMessage for CodexMessage {
-    fn parse_vec(path: &Path) -> Result<Vec<AgentMessage>> {
+    fn parse(path: &Path) -> Result<Vec<AgentMessage>> {
         let file = Self::read_to_string(path)?;
         let messages = serde_json::Deserializer::from_str(&file)
             .into_iter::<Self>()
