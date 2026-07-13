@@ -5,6 +5,7 @@ use serde_json::Value;
 use std::path::Path;
 
 const APPLY_PATCH_TOOL: &str = "apply_patch";
+const APPLY_PATCH_LABEL: &str = "apply patch";
 
 #[derive(Deserialize, Debug)]
 pub struct CodexMessage {
@@ -48,10 +49,10 @@ impl From<CodexMessage> for AgentMessage {
                 let text = output_text(&value.payload);
                 (text.as_ref().map(|_| "assistant".to_string()), text)
             }
-            ("response_item", _) if is_edit_tool_call => {
-                let text = string_field(&value.payload, "name").map(str::to_string);
-                (text.as_ref().map(|_| "assistant".to_string()), text)
-            }
+            ("response_item", _) if is_edit_tool_call => (
+                Some("assistant".to_string()),
+                Some(APPLY_PATCH_LABEL.to_string()),
+            ),
             _ => (None, None),
         };
         let is_message = role.is_some();
@@ -93,6 +94,14 @@ impl From<CodexMessage> for AgentMessage {
             model: string_field(&value.payload, "model").map(str::to_string),
             tool_call_id: string_field(&value.payload, "call_id").map(str::to_string),
             tool_name: string_field(&value.payload, "name").map(str::to_string),
+            tool_path: None,
+            tool_contents: if is_edit_tool_call {
+                string_field(&value.payload, "input")
+                    .map(|input| vec![input.to_string()])
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            },
             is_error: None,
         }
     }
@@ -254,10 +263,12 @@ mod tests {
 
         assert_eq!(converted.typ, "message");
         assert_eq!(converted.role.as_deref(), Some("assistant"));
-        assert_eq!(converted.text.as_deref(), Some("apply_patch"));
+        assert_eq!(converted.text.as_deref(), Some("apply patch"));
         assert_eq!(converted.phase.as_deref(), Some(TOOL_CALL_PHASE));
         assert_eq!(converted.tool_call_id.as_deref(), Some("call-2"));
         assert_eq!(converted.tool_name.as_deref(), Some("apply_patch"));
+        assert_eq!(converted.tool_path, None);
+        assert_eq!(converted.tool_contents, ["*** Begin Patch"]);
 
         for payload in [
             r#"{"type":"function_call","name":"exec_command"}"#,

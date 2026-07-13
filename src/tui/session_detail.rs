@@ -125,17 +125,39 @@ fn is_commentary(message: &SessionMessage) -> bool {
 }
 
 fn commentary_lines(message: &SessionMessage) -> Vec<Line<'_>> {
+    if message.phase.as_deref() == Some(TOOL_CALL_PHASE) {
+        return edit_tool_lines(message);
+    }
+
     let mut rendered = message_text_lines(message);
-    let marker = if message.phase.as_deref() == Some(TOOL_CALL_PHASE) {
-        TOOL_CALL_MARKER
-    } else {
-        COMMENTARY_BULLET
-    };
     let Some(first_line) = rendered.first_mut() else {
-        return vec![Line::styled(marker, assistant_text_style(message))];
+        return vec![Line::styled(
+            COMMENTARY_BULLET,
+            assistant_text_style(message),
+        )];
     };
-    first_line.spans.insert(0, Span::raw(marker));
+    first_line.spans.insert(0, Span::raw(COMMENTARY_BULLET));
     rendered
+}
+
+fn edit_tool_lines(message: &SessionMessage) -> Vec<Line<'_>> {
+    let style = assistant_text_style(message);
+    let mut heading_spans = vec![Span::raw(TOOL_CALL_MARKER), Span::raw(&message.text)];
+    if let Some(path) = &message.tool_path {
+        heading_spans.push(Span::raw(" "));
+        heading_spans.push(Span::styled(
+            path,
+            Style::default().add_modifier(Modifier::UNDERLINED),
+        ));
+    }
+
+    let mut heading = Line::from(heading_spans);
+    heading.style = style;
+    let mut lines = vec![heading];
+    for content in &message.tool_contents {
+        lines.extend(content.split('\n').map(|line| Line::styled(line, style)));
+    }
+    lines
 }
 
 fn message_text_lines(message: &SessionMessage) -> Vec<Line<'_>> {
@@ -183,6 +205,8 @@ mod tests {
             role: "assistant".to_string(),
             text: "A **bold** answer".to_string(),
             phase: Some("final_answer".to_string()),
+            tool_path: None,
+            tool_contents: Vec::new(),
         }];
 
         let lines = session_message_lines(&messages, false);
@@ -219,6 +243,8 @@ mod tests {
                 role: "assistant".to_string(),
                 text: "Inspecting the repository".to_string(),
                 phase: Some("commentary".to_string()),
+                tool_path: None,
+                tool_contents: Vec::new(),
             },
             SessionMessage {
                 id: "commentary-2".to_string(),
@@ -227,6 +253,8 @@ mod tests {
                 role: "assistant".to_string(),
                 text: "Running the focused tests".to_string(),
                 phase: Some("commentary".to_string()),
+                tool_path: None,
+                tool_contents: Vec::new(),
             },
         ];
 
@@ -326,21 +354,56 @@ mod tests {
     }
 
     #[test]
-    fn renders_edit_tool_calls_in_commentary_with_a_star_marker() {
+    fn renders_edit_path_and_content_in_commentary() {
+        const PI_PATH: &str = "/Users/triluu/dotfiles/nvim/lua/plugins/lsp.lua";
         let messages = [
             message(ProviderEnum::Codex, "assistant", "commentary", "Checking"),
-            message(ProviderEnum::Codex, "assistant", "tool_call", "apply_patch"),
-            message(ProviderEnum::Pi, "assistant", "tool_call", "edit"),
+            edit_message(
+                ProviderEnum::Codex,
+                "apply patch",
+                None,
+                &["*** Begin Patch\n+codex edit\n*** End Patch"],
+            ),
+            edit_message(
+                ProviderEnum::Pi,
+                "edit",
+                Some(PI_PATH),
+                &["local enabled = true\n", "", "return enabled"],
+            ),
         ];
 
+        let lines = session_message_lines(&messages, true);
         let rendered_lines = rendered_lines(&messages, true);
 
         assert_eq!(role_header_count(&rendered_lines, ASSISTANT_ROLE), 1);
         assert!(rendered_lines.iter().any(|line| line == "• Checking"));
-        assert!(rendered_lines.iter().any(|line| line == "✳ apply_patch"));
-        assert!(rendered_lines.iter().any(|line| line == "✳ edit"));
-        assert!(rendered_lines.iter().all(|line| line != "• apply_patch"));
-        assert!(rendered_lines.iter().all(|line| line != "• edit"));
+        assert!(rendered_lines.iter().any(|line| line == "✳ apply patch"));
+        assert!(rendered_lines.iter().any(|line| line == "+codex edit"));
+        assert!(
+            rendered_lines
+                .iter()
+                .any(|line| line == &format!("✳ edit {PI_PATH}"))
+        );
+        assert!(
+            rendered_lines
+                .iter()
+                .any(|line| line == "local enabled = true")
+        );
+        let pi_heading_index = rendered_lines
+            .iter()
+            .position(|line| line == &format!("✳ edit {PI_PATH}"))
+            .unwrap();
+        assert_eq!(
+            &rendered_lines[pi_heading_index + 1..pi_heading_index + 5],
+            ["local enabled = true", "", "", "return enabled"]
+        );
+
+        let path_span = lines
+            .iter()
+            .flat_map(|line| &line.spans)
+            .find(|span| span.content == PI_PATH)
+            .unwrap();
+        assert!(path_span.style.add_modifier.contains(Modifier::UNDERLINED));
     }
 
     #[test]
@@ -426,6 +489,29 @@ mod tests {
             role: role.to_string(),
             text: text.to_string(),
             phase: (!phase.is_empty()).then(|| phase.to_string()),
+            tool_path: None,
+            tool_contents: Vec::new(),
+        }
+    }
+
+    fn edit_message(
+        provider: ProviderEnum,
+        text: &str,
+        tool_path: Option<&str>,
+        tool_contents: &[&str],
+    ) -> SessionMessage {
+        SessionMessage {
+            id: format!("edit-{text}"),
+            provider,
+            ts: "2026-07-13T01:00:00Z".to_string(),
+            role: "assistant".to_string(),
+            text: text.to_string(),
+            phase: Some("tool_call".to_string()),
+            tool_path: tool_path.map(str::to_string),
+            tool_contents: tool_contents
+                .iter()
+                .map(|content| (*content).to_string())
+                .collect(),
         }
     }
 

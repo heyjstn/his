@@ -79,6 +79,9 @@ pub struct AgentMessage {
     pub model: Option<String>,
     pub tool_call_id: Option<String>,
     pub tool_name: Option<String>,
+    pub tool_path: Option<String>,
+    #[serde(default)]
+    pub tool_contents: Vec<String>,
     pub is_error: Option<bool>,
 }
 

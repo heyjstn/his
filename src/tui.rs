@@ -109,6 +109,8 @@ mod tests {
             role: "assistant".to_string(),
             text: text.to_string(),
             phase: Some(phase.to_string()),
+            tool_path: None,
+            tool_contents: Vec::new(),
         }
     }
 
