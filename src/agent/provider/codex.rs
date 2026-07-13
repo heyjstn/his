@@ -55,6 +55,7 @@ impl From<CodexMessage> for AgentMessage {
                 .map(str::to_string),
             role,
             text,
+            phase: string_field(&value.payload, "phase").map(str::to_string),
             provider: string_field(&value.payload, "model_provider").map(str::to_string),
             model: string_field(&value.payload, "model").map(str::to_string),
             tool_call_id: string_field(&value.payload, "call_id").map(str::to_string),

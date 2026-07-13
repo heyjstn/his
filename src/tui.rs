@@ -254,6 +254,8 @@ fn render_session(frame: &mut ratatui::Frame, app: &App, session: &Session) {
 
 const USER_ROLE: &str = "user";
 const ASSISTANT_ROLE: &str = "assistant";
+const CODEX_COMMENTARY_PHASE: &str = "commentary";
+const COMMENTARY_BULLET: &str = "• ";
 const EMPTY_SESSION_MESSAGE: &str = "No readable user or assistant messages in this session.";
 
 fn session_message_lines(messages: &[SessionMessage]) -> Vec<Line<'_>> {
@@ -265,25 +267,52 @@ fn session_message_lines(messages: &[SessionMessage]) -> Vec<Line<'_>> {
     }
 
     let mut lines = Vec::new();
-    for message in messages {
-        let color = match message.role.as_str() {
-            USER_ROLE => Color::LightCyan,
-            ASSISTANT_ROLE => Color::LightGreen,
-            _ => Color::Gray,
-        };
-        lines.push(Line::from(vec![
-            Span::styled(
-                message.role.as_str(),
-                Style::default().fg(color).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("  "),
-            Span::styled(&message.ts, Style::default().fg(Color::DarkGray)),
-        ]));
-        lines.extend(render_markdown(&message.text).lines);
+    let mut messages = messages.iter().peekable();
+    while let Some(message) = messages.next() {
+        lines.push(message_header(message));
+        if is_codex_commentary(message) {
+            lines.extend(commentary_lines(message));
+            while let Some(commentary) = messages.next_if(|message| is_codex_commentary(message)) {
+                lines.extend(commentary_lines(commentary));
+            }
+        } else {
+            lines.extend(render_markdown(&message.text).lines);
+        }
         lines.push(Line::default());
     }
 
     lines
+}
+
+fn message_header(message: &SessionMessage) -> Line<'_> {
+    let color = match message.role.as_str() {
+        USER_ROLE => Color::LightCyan,
+        ASSISTANT_ROLE => Color::LightGreen,
+        _ => Color::Gray,
+    };
+    Line::from(vec![
+        Span::styled(
+            message.role.as_str(),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled(&message.ts, Style::default().fg(Color::DarkGray)),
+    ])
+}
+
+fn is_codex_commentary(message: &SessionMessage) -> bool {
+    message.provider == ProviderEnum::Codex
+        && message.role == ASSISTANT_ROLE
+        && message.phase.as_deref() == Some(CODEX_COMMENTARY_PHASE)
+}
+
+fn commentary_lines(message: &SessionMessage) -> Vec<Line<'_>> {
+    let mut rendered = render_markdown(&message.text).lines;
+    let Some(first_line) = rendered.first_mut() else {
+        return vec![Line::from(COMMENTARY_BULLET)];
+    };
+    first_line.spans.insert(0, Span::raw(COMMENTARY_BULLET));
+    rendered
 }
 
 #[derive(Clone, Copy)]
@@ -429,7 +458,7 @@ fn leave_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<(
 
 #[cfg(test)]
 mod tests {
-    use super::{EMPTY_SESSION_MESSAGE, session_message_lines};
+    use super::{ASSISTANT_ROLE, EMPTY_SESSION_MESSAGE, session_message_lines};
     use crate::agent::provider::ProviderEnum;
     use crate::agent::session::SessionMessage;
     use ratatui::style::Modifier;
@@ -442,6 +471,7 @@ mod tests {
             ts: "2026-07-13T01:00:00Z".to_string(),
             role: "assistant".to_string(),
             text: "A **bold** answer".to_string(),
+            phase: None,
         }];
 
         let lines = session_message_lines(&messages);
@@ -465,5 +495,137 @@ mod tests {
 
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].spans[0].content, EMPTY_SESSION_MESSAGE);
+    }
+
+    #[test]
+    fn renders_continuous_codex_commentary_as_one_bulleted_assistant_message() {
+        let messages = [
+            SessionMessage {
+                id: "commentary-1".to_string(),
+                provider: ProviderEnum::Codex,
+                ts: "2026-07-13T01:00:00Z".to_string(),
+                role: "assistant".to_string(),
+                text: "Inspecting the repository".to_string(),
+                phase: Some("commentary".to_string()),
+            },
+            SessionMessage {
+                id: "commentary-2".to_string(),
+                provider: ProviderEnum::Codex,
+                ts: "2026-07-13T01:01:00Z".to_string(),
+                role: "assistant".to_string(),
+                text: "Running the focused tests".to_string(),
+                phase: Some("commentary".to_string()),
+            },
+        ];
+
+        let lines = session_message_lines(&messages);
+        let rendered_lines = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            rendered_lines
+                .iter()
+                .filter(|line| line.starts_with(ASSISTANT_ROLE))
+                .count(),
+            1
+        );
+        assert!(
+            rendered_lines
+                .iter()
+                .any(|line| line.contains("Inspecting the repository") && line.contains('•'))
+        );
+        assert!(
+            rendered_lines
+                .iter()
+                .any(|line| line.contains("Running the focused tests") && line.contains('•'))
+        );
+    }
+
+    #[test]
+    fn does_not_group_codex_commentary_across_message_boundaries() {
+        let messages = [
+            message(
+                ProviderEnum::Codex,
+                "assistant",
+                "commentary",
+                "First update",
+            ),
+            message(
+                ProviderEnum::Codex,
+                "assistant",
+                "final_answer",
+                "First answer",
+            ),
+            message(
+                ProviderEnum::Codex,
+                "assistant",
+                "commentary",
+                "Second update",
+            ),
+            message(ProviderEnum::Codex, "user", "", "Continue"),
+            message(
+                ProviderEnum::Codex,
+                "assistant",
+                "commentary",
+                "Third update",
+            ),
+        ];
+
+        let rendered_lines = rendered_lines(&messages);
+
+        assert_eq!(role_header_count(&rendered_lines, ASSISTANT_ROLE), 4);
+        assert_eq!(role_header_count(&rendered_lines, "user"), 1);
+        assert!(
+            rendered_lines
+                .iter()
+                .any(|line| line == "First answer" && !line.contains('•'))
+        );
+    }
+
+    #[test]
+    fn keeps_pi_assistant_messages_separate() {
+        let messages = [
+            message(ProviderEnum::Pi, "assistant", "commentary", "First"),
+            message(ProviderEnum::Pi, "assistant", "commentary", "Second"),
+        ];
+
+        let rendered_lines = rendered_lines(&messages);
+
+        assert_eq!(role_header_count(&rendered_lines, ASSISTANT_ROLE), 2);
+        assert!(rendered_lines.iter().all(|line| !line.contains('•')));
+    }
+
+    fn message(provider: ProviderEnum, role: &str, phase: &str, text: &str) -> SessionMessage {
+        SessionMessage {
+            id: format!("{role}-{phase}-{text}"),
+            provider,
+            ts: "2026-07-13T01:00:00Z".to_string(),
+            role: role.to_string(),
+            text: text.to_string(),
+            phase: (!phase.is_empty()).then(|| phase.to_string()),
+        }
+    }
+
+    fn rendered_lines(messages: &[SessionMessage]) -> Vec<String> {
+        session_message_lines(messages)
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn role_header_count(lines: &[String], role: &str) -> usize {
+        lines.iter().filter(|line| line.starts_with(role)).count()
     }
 }

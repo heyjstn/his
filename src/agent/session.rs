@@ -23,6 +23,7 @@ pub struct SessionMessage {
     pub ts: String,
     pub role: String,
     pub text: String,
+    pub phase: Option<String>,
 }
 
 #[derive(Debug)]
@@ -130,6 +131,7 @@ fn parse_session(provider: &Provider, path: &Path, include_messages: bool) -> Re
                     .clone()
                     .unwrap_or_else(|| "message".to_string()),
                 text: message.text.clone().unwrap_or_default(),
+                phase: message.phase.clone(),
             })
             .collect()
     });
@@ -208,6 +210,15 @@ mod tests {
                     "message": "Read this"
                 }
             }
+            {
+                "timestamp": "2026-07-12T01:02:00Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "agent_message",
+                    "message": "Working on it",
+                    "phase": "commentary"
+                }
+            }
         "#;
         let (dir, provider) = test_provider(ProviderEnum::Codex, "session.jsonl", data);
 
@@ -217,7 +228,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(session.cwd, "/tmp/codex");
-        assert_eq!(session.messages.unwrap()[0].text, "Read this");
+        let messages = session.messages.unwrap();
+        assert_eq!(messages[0].text, "Read this");
+        assert_eq!(messages[1].phase.as_deref(), Some("commentary"));
         fs::remove_dir_all(dir).unwrap();
     }
 

@@ -65,6 +65,7 @@ pub struct AgentMessage {
     pub cwd: Option<String>,
     pub role: Option<String>,
     pub text: Option<String>,
+    pub phase: Option<String>,
     pub provider: Option<String>,
     pub model: Option<String>,
     pub tool_call_id: Option<String>,
