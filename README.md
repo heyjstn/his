@@ -13,3 +13,6 @@ His is a terminal application for viewing and transforming sessions between your
 supports Claude Code, Codex, and Pi.
 
 Work In Progress
+
+### License
+MIT
