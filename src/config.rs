@@ -1,4 +1,4 @@
-use crate::agent::provider::Provider;
+use crate::agent::Agent;
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::env::{self, VarError};
@@ -8,8 +8,9 @@ use std::path::Path;
 const CONFIG_FILE_NAME: &str = "config.toml";
 
 #[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct Config {
-    pub(crate) providers: Option<Vec<Provider>>,
+    pub(crate) agents: Option<Vec<Agent>>,
 }
 
 pub(crate) fn load(directory: impl AsRef<Path>) -> Result<Config> {
@@ -28,17 +29,16 @@ fn from_toml_with_environment(
     mut environment: impl FnMut(&str) -> std::result::Result<String, VarError>,
 ) -> Result<Config> {
     let mut config: Config = toml::from_str(data).context("failed to parse config")?;
-    for provider in config.providers.iter_mut().flatten() {
-        provider.dir = shellexpand::env_with_context(&provider.dir, |variable| {
-            environment(variable).map(Some)
-        })
-        .with_context(|| {
-            format!(
-                "failed to resolve environment variables in provider directory {:?}",
-                provider.dir
-            )
-        })?
-        .into_owned();
+    for agent in config.agents.iter_mut().flatten() {
+        agent.dir =
+            shellexpand::env_with_context(&agent.dir, |variable| environment(variable).map(Some))
+                .with_context(|| {
+                    format!(
+                        "failed to resolve environment variables in agent directory {:?}",
+                        agent.dir
+                    )
+                })?
+                .into_owned();
     }
     Ok(config)
 }
@@ -54,43 +54,43 @@ mod tests {
     static NEXT_TEST_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
 
     #[test]
-    fn loads_config_from_config_toml() {
+    fn loads_agents_from_config_toml() {
         let directory = test_directory();
         let data = r#"
-            [[providers]]
-            name = "codex"
+            [[agents]]
+            kind = "codex"
             dir = "/tmp/.codex"
         "#;
         fs::write(directory.join(CONFIG_FILE_NAME), data).unwrap();
 
         let config = load(&directory).unwrap();
 
-        let providers = config.providers.unwrap();
-        assert_eq!(providers.len(), 1);
-        assert_eq!(providers[0].dir, "/tmp/.codex");
+        let agents = config.agents.unwrap();
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].dir, "/tmp/.codex");
         fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
-    fn defaults_to_no_providers() {
+    fn defaults_to_no_agents() {
         let config = from_toml("").unwrap();
 
-        assert!(config.providers.is_none());
+        assert!(config.agents.is_none());
     }
 
     #[test]
-    fn resolves_environment_variables_in_provider_directories() {
+    fn resolves_environment_variables_in_agent_directories() {
         const TEST_HOME: &str = "/home/test-user";
         const TEST_PWD: &str = "/work/his";
 
         let config = from_toml_with_environment(
             r#"
-                [[providers]]
-                name = "pi"
+                [[agents]]
+                kind = "pi"
                 dir = "$PWD/tests/.pi/agent/sessions"
 
-                [[providers]]
-                name = "codex"
+                [[agents]]
+                kind = "codex"
                 dir = "$HOME/.codex/sessions"
             "#,
             |variable| match variable {
@@ -101,32 +101,46 @@ mod tests {
         )
         .unwrap();
 
-        let providers = config.providers.unwrap();
+        let agents = config.agents.unwrap();
         assert_eq!(
-            PathBuf::from(&providers[0].dir),
+            PathBuf::from(&agents[0].dir),
             PathBuf::from(TEST_PWD).join("tests/.pi/agent/sessions")
         );
         assert_eq!(
-            PathBuf::from(&providers[1].dir),
+            PathBuf::from(&agents[1].dir),
             PathBuf::from(TEST_HOME).join(".codex/sessions")
         );
     }
 
     #[test]
-    fn rejects_undefined_environment_variables_in_provider_directories() {
+    fn rejects_undefined_environment_variables_in_agent_directories() {
         let error = from_toml_with_environment(
             r#"
-                [[providers]]
-                name = "pi"
-                dir = "$HIS_CONFIG_TEST_UNDEFINED_PROVIDER_DIRECTORY"
+                [[agents]]
+                kind = "pi"
+                dir = "$HIS_CONFIG_TEST_UNDEFINED_AGENT_DIRECTORY"
             "#,
             |_| Err(VarError::NotPresent),
         )
         .unwrap_err();
 
         assert!(format!("{error:#}").starts_with(
-            "failed to resolve environment variables in provider directory \"$HIS_CONFIG_TEST_UNDEFINED_PROVIDER_DIRECTORY\""
+            "failed to resolve environment variables in agent directory \"$HIS_CONFIG_TEST_UNDEFINED_AGENT_DIRECTORY\""
         ));
+    }
+
+    #[test]
+    fn rejects_legacy_providers_config() {
+        let error = from_toml(
+            r#"
+                [[providers]]
+                name = "codex"
+                dir = "/tmp/.codex"
+            "#,
+        )
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("unknown field `providers`"));
     }
 
     #[test]

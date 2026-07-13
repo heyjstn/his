@@ -1,4 +1,4 @@
-use crate::agent::session::{Session, SessionRepository};
+use crate::session::{Session, SessionRepository};
 
 const LOAD_SESSION_ERROR_PREFIX: &str = "Unable to load session";
 
@@ -87,12 +87,12 @@ impl App {
         let selected = self
             .visible_sessions()
             .get(self.selected)
-            .map(|session| (session.provider, session.id.clone()));
-        let Some((provider, session_id)) = selected else {
+            .map(|session| (session.agent, session.id.clone()));
+        let Some((agent, session_id)) = selected else {
             return;
         };
 
-        match repository.load_session(provider, &session_id) {
+        match repository.load_session(agent, &session_id) {
             Ok(session) => self.show_session(session),
             Err(error) => {
                 self.error = Some(format!("{LOAD_SESSION_ERROR_PREFIX}: {error:#}"));
@@ -139,8 +139,8 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::{App, LOAD_SESSION_ERROR_PREFIX};
-    use crate::agent::provider::{Provider, ProviderEnum};
-    use crate::agent::session::{Session, SessionRepository};
+    use crate::agent::{Agent, AgentKind};
+    use crate::session::{Session, SessionRepository};
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -268,13 +268,13 @@ mod tests {
             ),
         )
         .unwrap();
-        let providers = [Provider {
-            name: ProviderEnum::Pi,
+        let agents = [Agent {
+            kind: AgentKind::Pi,
             dir: directory.to_string_lossy().into_owned(),
         }];
-        let repository = SessionRepository::new(&providers).unwrap();
+        let repository = SessionRepository::new(&agents).unwrap();
         let mut app = App::new(vec![Session {
-            provider: ProviderEnum::Pi,
+            agent: AgentKind::Pi,
             ..session("selected", "/work/selected", "2026-07-13T01:00:00Z")
         }]);
 
@@ -288,7 +288,7 @@ mod tests {
     fn session(id: &str, cwd: &str, timestamp: &str) -> Session {
         Session {
             id: id.to_string(),
-            provider: ProviderEnum::Codex,
+            agent: AgentKind::Codex,
             ts: timestamp.to_string(),
             cwd: cwd.to_string(),
             messages: None,

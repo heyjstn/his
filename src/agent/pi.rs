@@ -1,6 +1,4 @@
-use crate::agent::provider::{
-    AgentMessage, COMMENTARY_PHASE, FromProviderMessage, TOOL_CALL_PHASE,
-};
+use super::{COMMENTARY_PHASE, Message, SessionRecord, TOOL_CALL_PHASE};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -55,13 +53,13 @@ pub struct MessageEvent {
     pub id: String,
     pub parent_id: Option<String>,
     pub timestamp: String,
-    pub message: Message,
+    pub message: ConversationMessage,
 }
 
 /// A conversation message, discriminated by `role`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "role")]
-pub enum Message {
+pub enum ConversationMessage {
     #[serde(rename = "user")]
     User(UserMessage),
     #[serde(rename = "assistant")]
@@ -170,12 +168,12 @@ pub struct ToolResultDetails {
     pub first_changed_line: Option<i64>,
 }
 
-impl FromProviderMessage for PiMessage {
-    fn into_agent_messages(self) -> Vec<AgentMessage> {
+impl SessionRecord for PiMessage {
+    fn into_messages(self) -> Vec<Message> {
         let PiMessage::Message(event) = &self else {
             return vec![self.into()];
         };
-        let Message::Assistant(assistant) = &event.message else {
+        let ConversationMessage::Assistant(assistant) = &event.message else {
             return vec![self.into()];
         };
         let thinking = content_thinking(&assistant.content);
@@ -184,14 +182,14 @@ impl FromProviderMessage for PiMessage {
             .cloned()
             .collect::<Vec<_>>();
 
-        let mut message = AgentMessage::from(self);
+        let mut message = Message::from(self);
         message.tool_call_id = None;
         message.tool_name = None;
         let mut messages =
             Vec::with_capacity(1 + tool_calls.len() + usize::from(message.text.is_some()));
 
         if let Some(thinking) = thinking {
-            messages.push(AgentMessage {
+            messages.push(Message {
                 id: format!("{}:{THINKING_CONTENT_TYPE}", message.id),
                 text: Some(thinking),
                 phase: Some(COMMENTARY_PHASE.to_string()),
@@ -202,7 +200,7 @@ impl FromProviderMessage for PiMessage {
         messages.extend(tool_calls.into_iter().map(|tool_call| {
             let tool_path = edit_path(&tool_call);
             let tool_contents = edit_contents(&tool_call);
-            AgentMessage {
+            Message {
                 id: format!("{}:{TOOL_CALL_CONTENT_TYPE}:{}", message.id, tool_call.id),
                 text: Some(tool_call.name.clone()),
                 phase: Some(TOOL_CALL_PHASE.to_string()),
@@ -222,10 +220,10 @@ impl FromProviderMessage for PiMessage {
     }
 }
 
-impl From<PiMessage> for AgentMessage {
+impl From<PiMessage> for Message {
     fn from(value: PiMessage) -> Self {
         match value {
-            PiMessage::Session(event) => AgentMessage {
+            PiMessage::Session(event) => Message {
                 typ: "session".to_string(),
                 id: event.id,
                 parent_id: None,
@@ -242,7 +240,7 @@ impl From<PiMessage> for AgentMessage {
                 tool_contents: Vec::new(),
                 is_error: None,
             },
-            PiMessage::ModelChange(event) => AgentMessage {
+            PiMessage::ModelChange(event) => Message {
                 typ: "model_change".to_string(),
                 id: event.id,
                 parent_id: event.parent_id,
@@ -259,7 +257,7 @@ impl From<PiMessage> for AgentMessage {
                 tool_contents: Vec::new(),
                 is_error: None,
             },
-            PiMessage::ThinkingLevelChange(event) => AgentMessage {
+            PiMessage::ThinkingLevelChange(event) => Message {
                 typ: "thinking_level_change".to_string(),
                 id: event.id,
                 parent_id: event.parent_id,
@@ -279,7 +277,7 @@ impl From<PiMessage> for AgentMessage {
             PiMessage::Message(event) => {
                 let (role, text, provider, model, tool_call_id, tool_name, is_error) =
                     match event.message {
-                        Message::User(message) => (
+                        ConversationMessage::User(message) => (
                             Some("user".to_string()),
                             content_text(&message.content),
                             None,
@@ -288,7 +286,7 @@ impl From<PiMessage> for AgentMessage {
                             None,
                             None,
                         ),
-                        Message::Assistant(message) => {
+                        ConversationMessage::Assistant(message) => {
                             let tool_call = first_tool_call(&message.content);
                             (
                                 Some("assistant".to_string()),
@@ -300,7 +298,7 @@ impl From<PiMessage> for AgentMessage {
                                 None,
                             )
                         }
-                        Message::ToolResult(message) => (
+                        ConversationMessage::ToolResult(message) => (
                             Some("tool_result".to_string()),
                             content_text(&message.content),
                             None,
@@ -311,7 +309,7 @@ impl From<PiMessage> for AgentMessage {
                         ),
                     };
 
-                AgentMessage {
+                Message {
                     typ: "message".to_string(),
                     id: event.id,
                     parent_id: event.parent_id,
@@ -397,7 +395,7 @@ fn edit_contents(tool_call: &ToolCallContent) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::PiMessage;
-    use crate::agent::provider::{COMMENTARY_PHASE, FromProviderMessage, TOOL_CALL_PHASE};
+    use crate::agent::{COMMENTARY_PHASE, SessionRecord, TOOL_CALL_PHASE};
 
     #[test]
     fn converts_only_edit_tool_calls_to_commentary_messages() {
@@ -406,7 +404,7 @@ mod tests {
         )
         .unwrap();
 
-        let converted = message.into_agent_messages();
+        let converted = message.into_messages();
 
         assert_eq!(converted.len(), 3);
         assert_eq!(

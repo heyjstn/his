@@ -1,4 +1,4 @@
-use crate::agent::provider::{AgentMessage, FromProviderMessage};
+use super::{Message, SessionRecord};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde_json::Value;
@@ -12,8 +12,8 @@ pub struct CodexMessage {
     pub payload: Value,
 }
 
-impl FromProviderMessage for CodexMessage {
-    fn parse(path: &Path) -> Result<Vec<AgentMessage>> {
+impl SessionRecord for CodexMessage {
+    fn parse(path: &Path) -> Result<Vec<Message>> {
         let file = Self::read_to_string(path)?;
         let messages = serde_json::Deserializer::from_str(&file)
             .into_iter::<Self>()
@@ -26,7 +26,7 @@ impl FromProviderMessage for CodexMessage {
     }
 }
 
-impl From<CodexMessage> for AgentMessage {
+impl From<CodexMessage> for Message {
     fn from(value: CodexMessage) -> Self {
         let payload_type = string_field(&value.payload, "type");
         let is_session = value.typ == "session_meta";
@@ -60,7 +60,7 @@ impl From<CodexMessage> for AgentMessage {
             .map(str::to_string)
             .unwrap_or_else(|| format!("{}:{}", timestamp, value.typ));
 
-        AgentMessage {
+        Message {
             typ: if is_session {
                 "session".to_string()
             } else if is_message {
@@ -112,14 +112,14 @@ enum AssistantMessageSource {
     Response,
 }
 
-fn convert_messages(messages: Vec<CodexMessage>) -> Vec<AgentMessage> {
+fn convert_messages(messages: Vec<CodexMessage>) -> Vec<Message> {
     let mut converted = Vec::with_capacity(messages.len());
     let mut pending_assistant: Option<(usize, AssistantMessageSource)> = None;
 
     for message in messages {
         let is_message_record = is_message_record(&message);
         let source = assistant_message_source(&message);
-        let message = AgentMessage::from(message);
+        let message = Message::from(message);
 
         if message.typ != "message" || message.text.is_none() {
             if is_message_record {
@@ -175,7 +175,7 @@ fn assistant_message_source(message: &CodexMessage) -> Option<AssistantMessageSo
     }
 }
 
-fn is_same_utterance(left: &AgentMessage, right: &AgentMessage) -> bool {
+fn is_same_utterance(left: &Message, right: &Message) -> bool {
     left.role == right.role
         && left.text == right.text
         && (left.phase == right.phase || left.phase.is_none() || right.phase.is_none())
@@ -184,7 +184,7 @@ fn is_same_utterance(left: &AgentMessage, right: &AgentMessage) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{CodexMessage, convert_messages};
-    use crate::agent::provider::AgentMessage;
+    use crate::agent::Message;
 
     #[test]
     fn converts_assistant_response_output_text() {
@@ -205,7 +205,7 @@ mod tests {
             }"#,
         );
 
-        let converted = AgentMessage::from(message);
+        let converted = Message::from(message);
 
         assert_eq!(converted.typ, "message");
         assert_eq!(converted.role.as_deref(), Some("assistant"));
@@ -223,7 +223,7 @@ mod tests {
                 r#"{{"timestamp":"2026-07-13T01:00:00Z","type":"response_item","payload":{payload}}}"#
             ));
 
-            let converted = AgentMessage::from(message);
+            let converted = Message::from(message);
 
             assert_ne!(converted.typ, "message");
             assert!(converted.text.is_none());
@@ -244,7 +244,7 @@ mod tests {
                 r#"{{"timestamp":"2026-07-13T01:00:00Z","type":"response_item","payload":{payload}}}"#
             ));
 
-            let converted = AgentMessage::from(call);
+            let converted = Message::from(call);
 
             assert_ne!(converted.typ, "message");
             assert!(converted.role.is_none());

@@ -1,6 +1,6 @@
-use crate::agent::provider::{COMMENTARY_PHASE, ProviderEnum, TOOL_CALL_PHASE};
-use crate::agent::session::{Session, SessionMessage};
+use crate::agent::{AgentKind, COMMENTARY_PHASE, TOOL_CALL_PHASE};
 use crate::renderer::render_markdown;
+use crate::session::{Session, SessionMessage};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -22,7 +22,7 @@ pub(super) fn render_header(frame: &mut Frame, session: &Session, area: Rect) {
         Paragraph::new(vec![
             Line::from(vec![
                 Span::styled(
-                    provider_name(&session.provider),
+                    agent_name(&session.agent),
                     Style::default()
                         .fg(Color::LightMagenta)
                         .add_modifier(Modifier::BOLD),
@@ -234,10 +234,10 @@ fn assistant_text_style(message: &SessionMessage) -> Style {
     Style::default().fg(COMMENTARY_FOREGROUND)
 }
 
-fn provider_name(provider: &ProviderEnum) -> &'static str {
-    match provider {
-        ProviderEnum::Codex => "Codex",
-        ProviderEnum::Pi => "Pi",
+fn agent_name(agent: &AgentKind) -> &'static str {
+    match agent {
+        AgentKind::Codex => "Codex",
+        AgentKind::Pi => "Pi",
     }
 }
 
@@ -247,15 +247,15 @@ mod tests {
         ASSISTANT_ROLE, CODE_FENCE, COMMENTARY_FOREGROUND, EMPTY_SESSION_MESSAGE, edit_language,
         session_message_lines, source_code_fence,
     };
-    use crate::agent::provider::ProviderEnum;
-    use crate::agent::session::SessionMessage;
+    use crate::agent::AgentKind;
+    use crate::session::SessionMessage;
     use ratatui::style::{Color, Modifier};
 
     #[test]
     fn renders_session_message_markdown() {
         let messages = [SessionMessage {
             id: "message-1".to_string(),
-            provider: ProviderEnum::Codex,
+            agent: AgentKind::Codex,
             ts: "2026-07-13T01:00:00Z".to_string(),
             role: "assistant".to_string(),
             text: "A **bold** answer".to_string(),
@@ -293,7 +293,7 @@ mod tests {
         let messages = [
             SessionMessage {
                 id: "commentary-1".to_string(),
-                provider: ProviderEnum::Codex,
+                agent: AgentKind::Codex,
                 ts: "2026-07-13T01:00:00Z".to_string(),
                 role: "assistant".to_string(),
                 text: "Inspecting the repository".to_string(),
@@ -303,7 +303,7 @@ mod tests {
             },
             SessionMessage {
                 id: "commentary-2".to_string(),
-                provider: ProviderEnum::Codex,
+                agent: AgentKind::Codex,
                 ts: "2026-07-13T01:01:00Z".to_string(),
                 role: "assistant".to_string(),
                 text: "Running the focused tests".to_string(),
@@ -348,31 +348,16 @@ mod tests {
     #[test]
     fn does_not_group_codex_commentary_across_message_boundaries() {
         let messages = [
+            message(AgentKind::Codex, "assistant", "commentary", "First update"),
             message(
-                ProviderEnum::Codex,
-                "assistant",
-                "commentary",
-                "First update",
-            ),
-            message(
-                ProviderEnum::Codex,
+                AgentKind::Codex,
                 "assistant",
                 "final_answer",
                 "First answer",
             ),
-            message(
-                ProviderEnum::Codex,
-                "assistant",
-                "commentary",
-                "Second update",
-            ),
-            message(ProviderEnum::Codex, "user", "", "Continue"),
-            message(
-                ProviderEnum::Codex,
-                "assistant",
-                "commentary",
-                "Third update",
-            ),
+            message(AgentKind::Codex, "assistant", "commentary", "Second update"),
+            message(AgentKind::Codex, "user", "", "Continue"),
+            message(AgentKind::Codex, "assistant", "commentary", "Third update"),
         ];
 
         let rendered_lines = rendered_lines(&messages, true);
@@ -389,8 +374,8 @@ mod tests {
     #[test]
     fn renders_continuous_pi_thinking_as_one_bulleted_assistant_message() {
         let messages = [
-            message(ProviderEnum::Pi, "assistant", "commentary", "First"),
-            message(ProviderEnum::Pi, "assistant", "commentary", "Second"),
+            message(AgentKind::Pi, "assistant", "commentary", "First"),
+            message(AgentKind::Pi, "assistant", "commentary", "Second"),
         ];
 
         let rendered_lines = rendered_lines(&messages, true);
@@ -413,9 +398,9 @@ mod tests {
         const PI_PATH: &str = "/Users/triluu/dotfiles/nvim/lua/plugins/lsp.lua";
         const LUA_CODE_FENCE: &str = "```lua";
         let messages = [
-            message(ProviderEnum::Codex, "assistant", "commentary", "Checking"),
+            message(AgentKind::Codex, "assistant", "commentary", "Checking"),
             edit_message(
-                ProviderEnum::Pi,
+                AgentKind::Pi,
                 "edit",
                 Some(PI_PATH),
                 &["local enabled = true\n", "", "return enabled"],
@@ -476,7 +461,7 @@ mod tests {
     #[test]
     fn renders_untyped_edit_content_without_a_file_extension() {
         let messages = [edit_message(
-            ProviderEnum::Pi,
+            AgentKind::Pi,
             "edit",
             Some("/tmp/Makefile"),
             &["all:"],
@@ -498,8 +483,8 @@ mod tests {
     #[test]
     fn does_not_apply_codex_assistant_styles_to_other_messages() {
         let messages = [
-            message(ProviderEnum::Pi, "assistant", "final_answer", "Answer"),
-            message(ProviderEnum::Codex, "user", "", "Question"),
+            message(AgentKind::Pi, "assistant", "final_answer", "Answer"),
+            message(AgentKind::Codex, "user", "", "Question"),
         ];
 
         let lines = session_message_lines(&messages, true);
@@ -513,8 +498,8 @@ mod tests {
     #[test]
     fn preserves_markdown_colors_over_codex_message_styles() {
         let messages = [
-            message(ProviderEnum::Codex, "assistant", "commentary", "## Update"),
-            message(ProviderEnum::Codex, "assistant", "final_answer", "# Answer"),
+            message(AgentKind::Codex, "assistant", "commentary", "## Update"),
+            message(AgentKind::Codex, "assistant", "final_answer", "# Answer"),
         ];
 
         let lines = session_message_lines(&messages, true);
@@ -526,24 +511,14 @@ mod tests {
     #[test]
     fn hides_commentary_when_visibility_is_disabled() {
         let messages = [
+            message(AgentKind::Codex, "assistant", "commentary", "Hidden update"),
             message(
-                ProviderEnum::Codex,
-                "assistant",
-                "commentary",
-                "Hidden update",
-            ),
-            message(
-                ProviderEnum::Codex,
+                AgentKind::Codex,
                 "assistant",
                 "final_answer",
                 "Visible answer",
             ),
-            message(
-                ProviderEnum::Pi,
-                "assistant",
-                "tool_call",
-                "Hidden tool call",
-            ),
+            message(AgentKind::Pi, "assistant", "tool_call", "Hidden tool call"),
         ];
 
         let visible_lines = rendered_lines(&messages, false);
@@ -561,7 +536,7 @@ mod tests {
         );
 
         let commentary_only = [message(
-            ProviderEnum::Codex,
+            AgentKind::Codex,
             "assistant",
             "commentary",
             "Hidden update",
@@ -570,10 +545,10 @@ mod tests {
         assert_eq!(visible_lines, [EMPTY_SESSION_MESSAGE]);
     }
 
-    fn message(provider: ProviderEnum, role: &str, phase: &str, text: &str) -> SessionMessage {
+    fn message(agent: AgentKind, role: &str, phase: &str, text: &str) -> SessionMessage {
         SessionMessage {
             id: format!("{role}-{phase}-{text}"),
-            provider,
+            agent,
             ts: "2026-07-13T01:00:00Z".to_string(),
             role: role.to_string(),
             text: text.to_string(),
@@ -584,14 +559,14 @@ mod tests {
     }
 
     fn edit_message(
-        provider: ProviderEnum,
+        agent: AgentKind,
         text: &str,
         tool_path: Option<&str>,
         tool_contents: &[&str],
     ) -> SessionMessage {
         SessionMessage {
             id: format!("edit-{text}"),
-            provider,
+            agent,
             ts: "2026-07-13T01:00:00Z".to_string(),
             role: "assistant".to_string(),
             text: text.to_string(),

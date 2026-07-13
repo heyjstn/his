@@ -1,5 +1,5 @@
-use crate::agent::provider::ProviderEnum;
-use crate::agent::session::Session;
+use crate::agent::AgentKind;
+use crate::session::Session;
 use chrono::{DateTime, Utc};
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -11,7 +11,7 @@ const SEARCH_PLACEHOLDER: &str = "Type to search";
 const SELECTED_MARKER: &str = "> ";
 const UNSELECTED_MARKER: &str = "  ";
 const MARKER_WIDTH: usize = 2;
-const PROVIDER_WIDTH: usize = 7;
+const AGENT_WIDTH: usize = 7;
 const ELAPSED_WIDTH: usize = 9;
 const MESSAGE_GAP_WIDTH: usize = 4;
 const MIN_MESSAGE_WIDTH: usize = 2;
@@ -83,7 +83,7 @@ impl RowLayout {
             .max()
             .unwrap_or_default();
         let fixed_width =
-            MARKER_WIDTH + PROVIDER_WIDTH + ELAPSED_WIDTH + MESSAGE_GAP_WIDTH + MIN_MESSAGE_WIDTH;
+            MARKER_WIDTH + AGENT_WIDTH + ELAPSED_WIDTH + MESSAGE_GAP_WIDTH + MIN_MESSAGE_WIDTH;
         let cwd_width = max_cwd_width
             .min(MAX_CWD_WIDTH)
             .min(width.saturating_sub(fixed_width));
@@ -93,7 +93,7 @@ impl RowLayout {
 
     fn message_width(self) -> usize {
         self.width.saturating_sub(
-            MARKER_WIDTH + PROVIDER_WIDTH + ELAPSED_WIDTH + self.cwd_width + MESSAGE_GAP_WIDTH,
+            MARKER_WIDTH + AGENT_WIDTH + ELAPSED_WIDTH + self.cwd_width + MESSAGE_GAP_WIDTH,
         )
     }
 }
@@ -117,10 +117,7 @@ fn session_row(session: &Session, selected: bool, layout: RowLayout) -> ListItem
 
     ListItem::new(Line::from(vec![
         Span::raw(marker),
-        Span::styled(
-            fixed_width(provider_name(&session.provider), PROVIDER_WIDTH),
-            style,
-        ),
+        Span::styled(fixed_width(agent_name(&session.agent), AGENT_WIDTH), style),
         Span::styled(fixed_width(&elapsed(&session.ts), ELAPSED_WIDTH), style),
         Span::styled(cwd, style),
         Span::styled(" ".repeat(MESSAGE_GAP_WIDTH), style),
@@ -166,10 +163,10 @@ fn display_width(value: &str) -> usize {
     Span::raw(value).width()
 }
 
-fn provider_name(provider: &ProviderEnum) -> &'static str {
-    match provider {
-        ProviderEnum::Codex => "Codex",
-        ProviderEnum::Pi => "Pi",
+fn agent_name(agent: &AgentKind) -> &'static str {
+    match agent {
+        AgentKind::Codex => "Codex",
+        AgentKind::Pi => "Pi",
     }
 }
 
@@ -197,8 +194,8 @@ fn elapsed_at(timestamp: &str, now: DateTime<Utc>) -> String {
 #[cfg(test)]
 mod tests {
     use super::{MAX_CWD_WIDTH, RowLayout, elapsed_at, fixed_width, truncate_end};
-    use crate::agent::provider::ProviderEnum;
-    use crate::agent::session::Session;
+    use crate::agent::AgentKind;
+    use crate::session::Session;
     use chrono::{TimeZone, Utc};
 
     #[test]
@@ -231,7 +228,7 @@ mod tests {
     fn session(cwd: &str) -> Session {
         Session {
             id: "session".to_string(),
-            provider: ProviderEnum::Codex,
+            agent: AgentKind::Codex,
             ts: "2026-07-13T01:00:00Z".to_string(),
             cwd: cwd.to_string(),
             messages: None,

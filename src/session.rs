@@ -1,4 +1,4 @@
-use super::provider::{Provider, ProviderEnum};
+use crate::agent::{Agent, AgentKind};
 use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
 use std::collections::HashSet;
@@ -7,7 +7,7 @@ use std::path::Path;
 #[derive(Deserialize, Debug)]
 pub struct Session {
     pub id: String,
-    pub provider: ProviderEnum,
+    pub agent: AgentKind,
     pub ts: String,
     pub cwd: String,
     pub messages: Option<Vec<SessionMessage>>,
@@ -17,7 +17,7 @@ pub struct Session {
 #[derive(Deserialize, Debug)]
 pub struct SessionMessage {
     pub id: String,
-    pub provider: ProviderEnum,
+    pub agent: AgentKind,
     pub ts: String,
     pub role: String,
     pub text: String,
@@ -29,59 +29,59 @@ pub struct SessionMessage {
 
 #[derive(Debug)]
 pub struct SessionRepository<'a> {
-    providers: &'a [Provider],
+    agents: &'a [Agent],
 }
 
 impl<'a> SessionRepository<'a> {
-    pub fn new(providers: &'a [Provider]) -> Result<Self> {
-        let mut provider_names = HashSet::new();
-        for provider in providers {
-            if !provider_names.insert(provider.name) {
+    pub fn new(agents: &'a [Agent]) -> Result<Self> {
+        let mut agent_kinds = HashSet::new();
+        for agent in agents {
+            if !agent_kinds.insert(agent.kind) {
                 return Err(anyhow!(
-                    "provider {:?} is configured more than once",
-                    provider.name
+                    "agent {:?} is configured more than once",
+                    agent.kind
                 ));
             }
         }
-        Ok(Self { providers })
+        Ok(Self { agents })
     }
 
     pub fn list_sessions(&self) -> Result<Vec<Session>> {
         let mut sessions = Vec::new();
-        for provider in self.providers {
-            sessions.extend(list_provider_sessions(provider)?);
+        for agent in self.agents {
+            sessions.extend(list_agent_sessions(agent)?);
         }
         sessions.sort_by_key(|session| session.ts.clone());
         Ok(sessions)
     }
 
-    pub fn load_session(&self, provider_name: ProviderEnum, session_id: &str) -> Result<Session> {
-        let provider = self
-            .providers
+    pub fn load_session(&self, agent_kind: AgentKind, session_id: &str) -> Result<Session> {
+        let agent = self
+            .agents
             .iter()
-            .find(|provider| provider.name == provider_name)
-            .ok_or_else(|| anyhow!("provider {provider_name:?} is not configured"))?;
+            .find(|agent| agent.kind == agent_kind)
+            .ok_or_else(|| anyhow!("agent {agent_kind:?} is not configured"))?;
 
-        load_provider_session(provider, session_id)
+        load_agent_session(agent, session_id)
             .with_context(|| format!("failed to load session {session_id}"))
     }
 }
 
-fn list_provider_sessions(provider: &Provider) -> Result<Vec<Session>> {
-    let file_paths = provider.get_session_paths()?;
+fn list_agent_sessions(agent: &Agent) -> Result<Vec<Session>> {
+    let file_paths = agent.get_session_paths()?;
 
     Ok(file_paths
         .iter()
-        .filter_map(|path| parse_session(provider, path, false).ok())
+        .filter_map(|path| parse_session(agent, path, false).ok())
         .collect())
 }
 
-fn load_provider_session(provider: &Provider, session_id: &str) -> Result<Session> {
-    let file_paths = provider.get_session_paths()?;
+fn load_agent_session(agent: &Agent, session_id: &str) -> Result<Session> {
+    let file_paths = agent.get_session_paths()?;
     let mut parse_error = None;
 
     for path in file_paths {
-        let session = match parse_session(provider, &path, true) {
+        let session = match parse_session(agent, &path, true) {
             Ok(session) => session,
             Err(error) => {
                 parse_error = Some(error);
@@ -99,12 +99,12 @@ fn load_provider_session(provider: &Provider, session_id: &str) -> Result<Sessio
 
     Err(anyhow!(
         "session {session_id} was not found for {:?}",
-        provider.name
+        agent.kind
     ))
 }
 
-fn parse_session(provider: &Provider, path: &Path, include_messages: bool) -> Result<Session> {
-    let data = provider.parse(path)?;
+fn parse_session(agent: &Agent, path: &Path, include_messages: bool) -> Result<Session> {
+    let data = agent.parse(path)?;
     let initialized_message = data
         .iter()
         .find(|message| message.typ == "session")
@@ -124,7 +124,7 @@ fn parse_session(provider: &Provider, path: &Path, include_messages: bool) -> Re
             })
             .map(|message| SessionMessage {
                 id: message.id.clone(),
-                provider: provider.name,
+                agent: agent.kind,
                 ts: message.timestamp.clone(),
                 role: message
                     .role
@@ -140,7 +140,7 @@ fn parse_session(provider: &Provider, path: &Path, include_messages: bool) -> Re
 
     Ok(Session {
         id: initialized_message.id.clone(),
-        provider: provider.name,
+        agent: agent.kind,
         ts: initialized_message.timestamp.clone(),
         cwd: initialized_message
             .cwd
@@ -154,7 +154,7 @@ fn parse_session(provider: &Provider, path: &Path, include_messages: bool) -> Re
 #[cfg(test)]
 mod tests {
     use super::SessionRepository;
-    use crate::agent::provider::{Provider, ProviderEnum};
+    use crate::agent::{Agent, AgentKind};
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -170,11 +170,11 @@ mod tests {
             "\n",
             r#"{"type":"message","id":"assistant-1","parentId":"user-1","timestamp":"2026-07-12T01:02:00Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Checking the request","thinkingSignature":"signature"},{"type":"toolCall","id":"call-1","name":"read","arguments":{}},{"type":"toolCall","id":"call-2","name":"edit","arguments":{"path":"/tmp/pi/file.rs","edits":[{"oldText":"before","newText":"after"}]}},{"type":"text","text":"Hi there"}],"api":"responses","provider":"test","model":"test-model","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"input":0.0,"output":0.0,"cacheRead":0.0,"cacheWrite":0.0,"total":0.0}},"stopReason":"stop","timestamp":2,"responseId":"response-1"}}"#,
         );
-        let (dir, provider) = test_provider(ProviderEnum::Pi, "session.jsonl", data);
+        let (dir, agent) = test_agent(AgentKind::Pi, "session.jsonl", data);
 
-        let repository = SessionRepository::new(std::slice::from_ref(&provider)).unwrap();
+        let repository = SessionRepository::new(std::slice::from_ref(&agent)).unwrap();
         let session = repository
-            .load_session(ProviderEnum::Pi, "pi-session")
+            .load_session(AgentKind::Pi, "pi-session")
             .unwrap();
 
         assert_eq!(session.first_message, "Hello");
@@ -260,11 +260,11 @@ mod tests {
                 }
             }
         "#;
-        let (dir, provider) = test_provider(ProviderEnum::Codex, "session.jsonl", data);
+        let (dir, agent) = test_agent(AgentKind::Codex, "session.jsonl", data);
 
-        let repository = SessionRepository::new(std::slice::from_ref(&provider)).unwrap();
+        let repository = SessionRepository::new(std::slice::from_ref(&agent)).unwrap();
         let session = repository
-            .load_session(ProviderEnum::Codex, "codex-session")
+            .load_session(AgentKind::Codex, "codex-session")
             .unwrap();
 
         assert_eq!(session.cwd, "/tmp/codex");
@@ -278,33 +278,33 @@ mod tests {
     }
 
     #[test]
-    fn returns_no_sessions_without_providers() {
+    fn returns_no_sessions_without_agents() {
         let repository = SessionRepository::new(&[]).unwrap();
 
         assert!(repository.list_sessions().unwrap().is_empty());
     }
 
     #[test]
-    fn rejects_an_unconfigured_provider() {
+    fn rejects_an_unconfigured_agent() {
         let repository = SessionRepository::new(&[]).unwrap();
 
         let error = repository
-            .load_session(ProviderEnum::Codex, "missing")
+            .load_session(AgentKind::Codex, "missing")
             .unwrap_err();
 
-        assert_eq!(format!("{error:#}"), "provider Codex is not configured");
+        assert_eq!(format!("{error:#}"), "agent Codex is not configured");
     }
 
     #[test]
     fn lists_sessions_in_timestamp_order() {
         let earlier_data = r#"{"type":"session","version":3,"id":"earlier","timestamp":"2026-07-11T01:00:00Z","cwd":"/tmp/earlier"}"#;
         let later_data = r#"{"type":"session","version":3,"id":"later","timestamp":"2026-07-12T01:00:00Z","cwd":"/tmp/later"}"#;
-        let (dir, provider) = test_provider(ProviderEnum::Pi, "earlier.jsonl", earlier_data);
+        let (dir, agent) = test_agent(AgentKind::Pi, "earlier.jsonl", earlier_data);
         let nested_dir = dir.join("nested");
         fs::create_dir(&nested_dir).unwrap();
         fs::write(nested_dir.join("later.jsonl"), later_data).unwrap();
-        let providers = [provider];
-        let repository = SessionRepository::new(&providers).unwrap();
+        let agents = [agent];
+        let repository = SessionRepository::new(&agents).unwrap();
 
         let sessions = repository.list_sessions().unwrap();
 
@@ -320,7 +320,7 @@ mod tests {
     }
 
     #[test]
-    fn loads_from_the_requested_provider() {
+    fn loads_from_the_requested_agent() {
         let codex_data = r#"
             {
                 "timestamp": "2026-07-12T01:00:00Z",
@@ -333,44 +333,43 @@ mod tests {
             }
         "#;
         let pi_data = r#"{"type":"session","version":3,"id":"pi-session","timestamp":"2026-07-12T01:00:00Z","cwd":"/tmp/pi"}"#;
-        let (codex_dir, codex_provider) =
-            test_provider(ProviderEnum::Codex, "codex.jsonl", codex_data);
-        let (pi_dir, pi_provider) = test_provider(ProviderEnum::Pi, "pi.jsonl", pi_data);
-        let providers = [codex_provider, pi_provider];
-        let repository = SessionRepository::new(&providers).unwrap();
+        let (codex_dir, codex_agent) = test_agent(AgentKind::Codex, "codex.jsonl", codex_data);
+        let (pi_dir, pi_agent) = test_agent(AgentKind::Pi, "pi.jsonl", pi_data);
+        let agents = [codex_agent, pi_agent];
+        let repository = SessionRepository::new(&agents).unwrap();
 
         let session = repository
-            .load_session(ProviderEnum::Pi, "pi-session")
+            .load_session(AgentKind::Pi, "pi-session")
             .unwrap();
 
-        assert_eq!(session.provider, ProviderEnum::Pi);
+        assert_eq!(session.agent, AgentKind::Pi);
         assert_eq!(session.cwd, "/tmp/pi");
         fs::remove_dir_all(codex_dir).unwrap();
         fs::remove_dir_all(pi_dir).unwrap();
     }
 
     #[test]
-    fn rejects_duplicate_provider_types() {
-        let providers = [
-            Provider {
-                name: ProviderEnum::Pi,
+    fn rejects_duplicate_agent_types() {
+        let agents = [
+            Agent {
+                kind: AgentKind::Pi,
                 dir: "/tmp/first".to_string(),
             },
-            Provider {
-                name: ProviderEnum::Pi,
+            Agent {
+                kind: AgentKind::Pi,
                 dir: "/tmp/second".to_string(),
             },
         ];
 
-        let error = SessionRepository::new(&providers).unwrap_err();
+        let error = SessionRepository::new(&agents).unwrap_err();
 
         assert_eq!(
             format!("{error:#}"),
-            "provider Pi is configured more than once"
+            "agent Pi is configured more than once"
         );
     }
 
-    fn test_provider(name: ProviderEnum, file_name: &str, data: &str) -> (PathBuf, Provider) {
+    fn test_agent(kind: AgentKind, file_name: &str, data: &str) -> (PathBuf, Agent) {
         let sequence = NEXT_TEST_DIR.fetch_add(1, Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
             "his-load-session-{}-{sequence}-{file_name}",
@@ -378,10 +377,10 @@ mod tests {
         ));
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join(file_name), data).unwrap();
-        let provider = Provider {
-            name,
+        let agent = Agent {
+            kind,
             dir: dir.to_string_lossy().into_owned(),
         };
-        (dir, provider)
+        (dir, agent)
     }
 }

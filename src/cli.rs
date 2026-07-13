@@ -1,5 +1,5 @@
-use crate::agent::session::SessionRepository;
 use crate::config;
+use crate::session::SessionRepository;
 use crate::tui;
 use anyhow::{Result, anyhow};
 use clap::{Parser, Subcommand};
@@ -31,8 +31,8 @@ pub fn run() -> Result<ExitCode> {
     let cli = Cli::parse();
 
     let config = config::load(config_home(env::var_os(HIS_HOME_ENV))?)?;
-    let providers = config.providers.as_deref().unwrap_or_default();
-    let repository = SessionRepository::new(providers)?;
+    let agents = config.agents.as_deref().unwrap_or_default();
+    let repository = SessionRepository::new(agents)?;
 
     match cli.command {
         None => tui::run(&repository)?,

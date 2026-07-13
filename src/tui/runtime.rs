@@ -1,5 +1,5 @@
 use super::app::App;
-use crate::agent::session::SessionRepository;
+use crate::session::SessionRepository;
 use anyhow::{Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::execute;
@@ -102,8 +102,8 @@ fn leave_terminal(terminal: &mut TuiTerminal) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{PAGE_SCROLL_ROWS, handle_detail_key, handle_key};
-    use crate::agent::provider::ProviderEnum;
-    use crate::agent::session::{Session, SessionRepository};
+    use crate::agent::AgentKind;
+    use crate::session::{Session, SessionRepository};
     use crate::tui::app::App;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -198,7 +198,7 @@ mod tests {
     fn session() -> Session {
         Session {
             id: "session".to_string(),
-            provider: ProviderEnum::Codex,
+            agent: AgentKind::Codex,
             ts: "2026-07-13T01:00:00Z".to_string(),
             cwd: "/work/project".to_string(),
             messages: None,

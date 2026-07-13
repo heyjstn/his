@@ -38,8 +38,8 @@ fn render(frame: &mut Frame, app: &App) {
 #[cfg(test)]
 mod tests {
     use super::{App, render};
-    use crate::agent::provider::ProviderEnum;
-    use crate::agent::session::{Session, SessionMessage};
+    use crate::agent::AgentKind;
+    use crate::session::{Session, SessionMessage};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
@@ -93,7 +93,7 @@ mod tests {
     fn session(messages: Option<Vec<SessionMessage>>) -> Session {
         Session {
             id: "session".to_string(),
-            provider: ProviderEnum::Codex,
+            agent: AgentKind::Codex,
             ts: "2026-07-13T01:00:00Z".to_string(),
             cwd: "/work/project".to_string(),
             messages,
@@ -104,7 +104,7 @@ mod tests {
     fn message(phase: &str, text: &str) -> SessionMessage {
         SessionMessage {
             id: format!("{phase}-{text}"),
-            provider: ProviderEnum::Codex,
+            agent: AgentKind::Codex,
             ts: "2026-07-13T01:01:00Z".to_string(),
             role: "assistant".to_string(),
             text: text.to_string(),
