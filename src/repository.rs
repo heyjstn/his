@@ -1,15 +1,16 @@
 use crate::agent::AgentKind;
 use crate::config::AgentConfig;
 use crate::session::{SessionDetail, SessionLocator, SessionSummary};
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::fmt;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 const SESSION_FILE_EXTENSION: &str = "jsonl";
+const CLAUDE_SUBAGENT_DIRECTORY: &str = "subagents";
 
 #[derive(Debug)]
 pub(crate) struct SessionCatalog {
@@ -175,10 +176,16 @@ fn discover_session_paths(agent: &AgentConfig) -> Result<SessionDiscovery> {
             }
         };
         let is_session = entry.file_type().is_file()
-            && entry.path().extension() == Some(OsStr::new(SESSION_FILE_EXTENSION));
+            && entry.path().extension() == Some(OsStr::new(SESSION_FILE_EXTENSION))
+            && is_agent_session_path(agent.kind, entry.path());
         Ok(is_session.then(|| entry.into_path()))
     });
     Ok(collect_discovery(entries))
+}
+
+fn is_agent_session_path(agent: AgentKind, path: &Path) -> bool {
+    agent != AgentKind::Claude
+        || path.parent().and_then(Path::file_name) != Some(OsStr::new(CLAUDE_SUBAGENT_DIRECTORY))
 }
 
 fn collect_discovery(entries: impl IntoIterator<Item = DiscoveryEntry>) -> SessionDiscovery {
@@ -197,7 +204,9 @@ fn collect_discovery(entries: impl IntoIterator<Item = DiscoveryEntry>) -> Sessi
 
 #[cfg(test)]
 mod tests {
-    use super::{collect_discovery, RepositoryWarning, SessionRepository};
+    use super::{
+        CLAUDE_SUBAGENT_DIRECTORY, RepositoryWarning, SessionRepository, collect_discovery,
+    };
     use crate::agent::AgentKind;
     use crate::config::AgentConfig;
     use std::fs;
@@ -205,18 +214,36 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(0);
+    const CLAUDE_FIXTURE: &str = include_str!("../tests/fixtures/claude/session.jsonl");
+    const CLAUDE_SIDECHAIN_FIXTURE: &str = r#"{"type":"assistant","sessionId":"claude-fixture","timestamp":"2026-07-14T01:01:00Z","cwd":"/work/claude-project","isSidechain":true,"message":{"role":"assistant","content":[{"type":"text","text":"Internal subagent output"}]}}"#;
     const CODEX_FIXTURE: &str = include_str!("../tests/fixtures/codex/session.jsonl");
     const PI_FIXTURE: &str = include_str!("../tests/fixtures/pi/session.jsonl");
 
     #[test]
     fn loads_sanitized_agent_fixtures() {
+        let claude_directory = test_directory("claude-fixture");
         let codex_directory = test_directory("codex-fixture");
         let pi_directory = test_directory("pi-fixture");
+        let claude_subagent_directory = claude_directory
+            .join("project/session-id")
+            .join(CLAUDE_SUBAGENT_DIRECTORY);
+        fs::create_dir_all(&claude_directory).unwrap();
+        fs::create_dir_all(&claude_subagent_directory).unwrap();
         fs::create_dir_all(&codex_directory).unwrap();
         fs::create_dir_all(&pi_directory).unwrap();
+        fs::write(claude_directory.join("session.jsonl"), CLAUDE_FIXTURE).unwrap();
+        fs::write(
+            claude_subagent_directory.join("agent-id.jsonl"),
+            CLAUDE_SIDECHAIN_FIXTURE,
+        )
+        .unwrap();
         fs::write(codex_directory.join("session.jsonl"), CODEX_FIXTURE).unwrap();
         fs::write(pi_directory.join("session.jsonl"), PI_FIXTURE).unwrap();
         let repository = SessionRepository::new(vec![
+            AgentConfig {
+                kind: AgentKind::Claude,
+                directory: claude_directory.clone(),
+            },
             AgentConfig {
                 kind: AgentKind::Codex,
                 directory: codex_directory.clone(),
@@ -229,18 +256,27 @@ mod tests {
         .unwrap();
 
         let catalog = repository.list_sessions();
+        let claude = catalog
+            .sessions
+            .iter()
+            .find(|session| session.agent == AgentKind::Claude)
+            .unwrap();
         let codex = catalog
             .sessions
             .iter()
             .find(|session| session.agent == AgentKind::Codex)
             .unwrap();
         let detail = repository.load_session(codex).unwrap();
+        let claude_detail = repository.load_session(claude).unwrap();
 
-        assert_eq!(catalog.sessions.len(), 2);
+        assert_eq!(catalog.sessions.len(), 3);
         assert!(catalog.warnings.is_empty());
-        assert_eq!(catalog.sessions[0].id, "pi-fixture");
+        assert_eq!(catalog.sessions[0].id, "claude-fixture");
+        assert_eq!(claude.first_message, "Inspect the Claude Code fixture");
+        assert_eq!(claude_detail.messages.len(), 4);
         assert_eq!(codex.first_message, "Inspect the Codex fixture");
         assert_eq!(detail.messages.len(), 2);
+        fs::remove_dir_all(claude_directory).unwrap();
         fs::remove_dir_all(codex_directory).unwrap();
         fs::remove_dir_all(pi_directory).unwrap();
     }
