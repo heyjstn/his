@@ -8,6 +8,7 @@ pub(super) struct App {
     search: String,
     active_session: Option<Session>,
     detail_scroll: u16,
+    commentary_visible: bool,
     error: Option<String>,
 }
 
@@ -21,6 +22,7 @@ impl App {
             search: String::new(),
             active_session: None,
             detail_scroll: 0,
+            commentary_visible: false,
             error: None,
         }
     }
@@ -55,6 +57,10 @@ impl App {
 
     pub(super) fn detail_scroll(&self) -> u16 {
         self.detail_scroll
+    }
+
+    pub(super) fn commentary_visible(&self) -> bool {
+        self.commentary_visible
     }
 
     pub(super) fn append_search(&mut self, character: char) {
@@ -97,12 +103,14 @@ impl App {
     pub(super) fn show_session(&mut self, session: Session) {
         self.active_session = Some(session);
         self.detail_scroll = 0;
+        self.commentary_visible = false;
         self.error = None;
     }
 
     pub(super) fn close_active_session(&mut self) {
         self.active_session = None;
         self.detail_scroll = 0;
+        self.commentary_visible = false;
     }
 
     pub(super) fn scroll_detail_up(&mut self, rows: u16) {
@@ -114,6 +122,11 @@ impl App {
     }
 
     pub(super) fn scroll_detail_home(&mut self) {
+        self.detail_scroll = 0;
+    }
+
+    pub(super) fn toggle_commentary_visibility(&mut self) {
+        self.commentary_visible = !self.commentary_visible;
         self.detail_scroll = 0;
     }
 
@@ -205,6 +218,22 @@ mod tests {
         app.close_active_session();
         assert!(app.active_session().is_none());
         assert_eq!(app.detail_scroll(), 0);
+    }
+
+    #[test]
+    fn toggles_commentary_visibility_and_resets_it_for_each_session() {
+        let mut app = App::new(Vec::new());
+        app.show_session(session("first", "/work/first", "2026-07-13T01:00:00Z"));
+
+        assert!(!app.commentary_visible());
+
+        app.scroll_detail_down(5);
+        app.toggle_commentary_visibility();
+        assert!(app.commentary_visible());
+        assert_eq!(app.detail_scroll(), 0);
+
+        app.show_session(session("second", "/work/second", "2026-07-13T02:00:00Z"));
+        assert!(!app.commentary_visible());
     }
 
     #[test]

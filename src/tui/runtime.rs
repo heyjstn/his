@@ -49,7 +49,7 @@ fn handle_key(app: &mut App, repository: &SessionRepository<'_>, key: KeyEvent) 
     }
 
     if app.active_session().is_some() {
-        handle_detail_key(app, key.code);
+        handle_detail_key(app, key);
         return false;
     }
 
@@ -66,8 +66,13 @@ fn handle_key(app: &mut App, repository: &SessionRepository<'_>, key: KeyEvent) 
     false
 }
 
-fn handle_detail_key(app: &mut App, key_code: KeyCode) {
-    match key_code {
+fn handle_detail_key(app: &mut App, key: KeyEvent) {
+    if key.code == KeyCode::Char('o') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        app.toggle_commentary_visibility();
+        return;
+    }
+
+    match key.code {
         KeyCode::Esc | KeyCode::Char('q') => app.close_active_session(),
         KeyCode::Up | KeyCode::Char('k') => app.scroll_detail_up(LINE_SCROLL_ROWS),
         KeyCode::Down | KeyCode::Char('j') => app.scroll_detail_down(LINE_SCROLL_ROWS),
@@ -158,7 +163,7 @@ mod tests {
             app.show_session(session());
             app.scroll_detail_down(initial_scroll);
 
-            handle_detail_key(&mut app, key);
+            handle_detail_key(&mut app, KeyEvent::new(key, KeyModifiers::NONE));
 
             assert_eq!(app.detail_scroll(), expected_scroll, "key: {key:?}");
             assert_eq!(
@@ -167,6 +172,27 @@ mod tests {
                 "key: {key:?}"
             );
         }
+    }
+
+    #[test]
+    fn control_o_toggles_commentary_visibility_in_session_detail() {
+        let repository = SessionRepository::new(&[]).unwrap();
+        let mut app = App::new(Vec::new());
+        app.show_session(session());
+
+        assert!(!handle_key(
+            &mut app,
+            &repository,
+            KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
+        ));
+        assert!(app.commentary_visible());
+
+        assert!(!handle_key(
+            &mut app,
+            &repository,
+            KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
+        ));
+        assert!(!app.commentary_visible());
     }
 
     fn session() -> Session {

@@ -36,18 +36,19 @@ pub(super) fn render_header(frame: &mut Frame, session: &Session, area: Rect) {
 pub(super) fn render_messages(
     frame: &mut Frame,
     messages: &[SessionMessage],
+    commentary_visible: bool,
     scroll: u16,
     area: Rect,
 ) {
     frame.render_widget(
-        Paragraph::new(session_message_lines(messages))
+        Paragraph::new(session_message_lines(messages, commentary_visible))
             .wrap(Wrap { trim: false })
             .scroll((scroll, 0)),
         area,
     );
 }
 
-pub(super) fn render_footer(frame: &mut Frame, area: Rect) {
+pub(super) fn render_footer(frame: &mut Frame, commentary_visible: bool, area: Rect) {
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("up/down", Style::default().add_modifier(Modifier::BOLD)),
@@ -57,6 +58,12 @@ pub(super) fn render_footer(frame: &mut Frame, area: Rect) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw(" faster    "),
+            Span::styled("ctrl+o", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(if commentary_visible {
+                " hide commentary    "
+            } else {
+                " show commentary    "
+            }),
             Span::styled("esc", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(" back"),
         ])),
@@ -64,16 +71,12 @@ pub(super) fn render_footer(frame: &mut Frame, area: Rect) {
     );
 }
 
-fn session_message_lines(messages: &[SessionMessage]) -> Vec<Line<'_>> {
-    if messages.is_empty() {
-        return vec![Line::styled(
-            EMPTY_SESSION_MESSAGE,
-            Style::default().fg(Color::DarkGray),
-        )];
-    }
-
+fn session_message_lines(messages: &[SessionMessage], commentary_visible: bool) -> Vec<Line<'_>> {
     let mut lines = Vec::new();
-    let mut messages = messages.iter().peekable();
+    let mut messages = messages
+        .iter()
+        .filter(|message| commentary_visible || !is_commentary(message))
+        .peekable();
     while let Some(message) = messages.next() {
         lines.push(message_header(message));
         if is_commentary(message) {
@@ -87,7 +90,14 @@ fn session_message_lines(messages: &[SessionMessage]) -> Vec<Line<'_>> {
         lines.push(Line::default());
     }
 
-    lines
+    if !lines.is_empty() {
+        return lines;
+    }
+
+    vec![Line::styled(
+        EMPTY_SESSION_MESSAGE,
+        Style::default().fg(Color::DarkGray),
+    )]
 }
 
 fn message_header(message: &SessionMessage) -> Line<'_> {
@@ -169,7 +179,7 @@ mod tests {
             phase: Some("final_answer".to_string()),
         }];
 
-        let lines = session_message_lines(&messages);
+        let lines = session_message_lines(&messages, false);
 
         assert_eq!(lines.len(), 3);
         assert_eq!(lines[0].spans[0].content, "assistant");
@@ -187,7 +197,7 @@ mod tests {
 
     #[test]
     fn renders_empty_session_message() {
-        let lines = session_message_lines(&[]);
+        let lines = session_message_lines(&[], false);
 
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].spans[0].content, EMPTY_SESSION_MESSAGE);
@@ -214,7 +224,7 @@ mod tests {
             },
         ];
 
-        let lines = session_message_lines(&messages);
+        let lines = session_message_lines(&messages, true);
         let rendered_lines = lines
             .iter()
             .map(|line| {
@@ -276,7 +286,7 @@ mod tests {
             ),
         ];
 
-        let rendered_lines = rendered_lines(&messages);
+        let rendered_lines = rendered_lines(&messages, true);
 
         assert_eq!(role_header_count(&rendered_lines, ASSISTANT_ROLE), 4);
         assert_eq!(role_header_count(&rendered_lines, "user"), 1);
@@ -294,8 +304,8 @@ mod tests {
             message(ProviderEnum::Pi, "assistant", "commentary", "Second"),
         ];
 
-        let rendered_lines = rendered_lines(&messages);
-        let lines = session_message_lines(&messages);
+        let rendered_lines = rendered_lines(&messages, true);
+        let lines = session_message_lines(&messages, true);
 
         assert_eq!(role_header_count(&rendered_lines, ASSISTANT_ROLE), 1);
         assert_eq!(
@@ -316,7 +326,7 @@ mod tests {
             message(ProviderEnum::Codex, "user", "", "Question"),
         ];
 
-        let lines = session_message_lines(&messages);
+        let lines = session_message_lines(&messages, true);
 
         for line in [&lines[1], &lines[4]] {
             assert!(line.style.fg.is_none());
@@ -331,10 +341,46 @@ mod tests {
             message(ProviderEnum::Codex, "assistant", "final_answer", "# Answer"),
         ];
 
-        let lines = session_message_lines(&messages);
+        let lines = session_message_lines(&messages, true);
 
         assert_eq!(lines[1].style.fg, Some(Color::Cyan));
         assert_eq!(lines[4].style.bg, Some(Color::Cyan));
+    }
+
+    #[test]
+    fn hides_commentary_when_visibility_is_disabled() {
+        let messages = [
+            message(
+                ProviderEnum::Codex,
+                "assistant",
+                "commentary",
+                "Hidden update",
+            ),
+            message(
+                ProviderEnum::Codex,
+                "assistant",
+                "final_answer",
+                "Visible answer",
+            ),
+        ];
+
+        let visible_lines = rendered_lines(&messages, false);
+
+        assert!(
+            !visible_lines
+                .iter()
+                .any(|line| line.contains("Hidden update"))
+        );
+        assert!(visible_lines.iter().any(|line| line == "Visible answer"));
+
+        let commentary_only = [message(
+            ProviderEnum::Codex,
+            "assistant",
+            "commentary",
+            "Hidden update",
+        )];
+        let visible_lines = rendered_lines(&commentary_only, false);
+        assert_eq!(visible_lines, [EMPTY_SESSION_MESSAGE]);
     }
 
     fn message(provider: ProviderEnum, role: &str, phase: &str, text: &str) -> SessionMessage {
@@ -348,8 +394,8 @@ mod tests {
         }
     }
 
-    fn rendered_lines(messages: &[SessionMessage]) -> Vec<String> {
-        session_message_lines(messages)
+    fn rendered_lines(messages: &[SessionMessage], commentary_visible: bool) -> Vec<String> {
+        session_message_lines(messages, commentary_visible)
             .iter()
             .map(|line| {
                 line.spans
