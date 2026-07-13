@@ -1,6 +1,8 @@
 use crate::agent::provider::{AgentMessage, FromProviderMessage};
+use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde_json::Value;
+use std::path::Path;
 
 #[derive(Deserialize, Debug)]
 pub struct CodexMessage {
@@ -10,22 +12,42 @@ pub struct CodexMessage {
     pub payload: Value,
 }
 
-impl FromProviderMessage for CodexMessage {}
+impl FromProviderMessage for CodexMessage {
+    fn parse_vec(path: &Path) -> Result<Vec<AgentMessage>> {
+        let file = Self::read_to_string(path)?;
+        let messages = serde_json::Deserializer::from_str(&file)
+            .into_iter::<Self>()
+            .map(|message| {
+                message.with_context(|| format!("failed to parse session file {}", path.display()))
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok(convert_messages(messages))
+    }
+}
 
 impl From<CodexMessage> for AgentMessage {
     fn from(value: CodexMessage) -> Self {
         let payload_type = string_field(&value.payload, "type");
         let is_session = value.typ == "session_meta";
-        let role = match (value.typ.as_str(), payload_type) {
-            ("event_msg", Some("user_message")) => Some("user".to_string()),
-            ("event_msg", Some("agent_message")) => Some("assistant".to_string()),
-            _ => None,
+        let (role, text) = match (value.typ.as_str(), payload_type) {
+            ("event_msg", Some("user_message")) => (
+                Some("user".to_string()),
+                string_field(&value.payload, "message").map(str::to_string),
+            ),
+            ("event_msg", Some("agent_message")) => (
+                Some("assistant".to_string()),
+                string_field(&value.payload, "message").map(str::to_string),
+            ),
+            ("response_item", Some("message"))
+                if string_field(&value.payload, "role") == Some("assistant") =>
+            {
+                let text = output_text(&value.payload);
+                (text.as_ref().map(|_| "assistant".to_string()), text)
+            }
+            _ => (None, None),
         };
         let is_message = role.is_some();
-        let text = is_message
-            .then(|| string_field(&value.payload, "message"))
-            .flatten()
-            .map(str::to_string);
         let timestamp = if is_session {
             string_field(&value.payload, "timestamp")
                 .unwrap_or(&value.timestamp)
@@ -67,4 +89,193 @@ impl From<CodexMessage> for AgentMessage {
 
 fn string_field<'a>(value: &'a Value, field: &str) -> Option<&'a str> {
     value.get(field).and_then(Value::as_str)
+}
+
+fn output_text(payload: &Value) -> Option<String> {
+    let text = payload
+        .get("content")?
+        .as_array()?
+        .iter()
+        .filter(|content| string_field(content, "type") == Some("output_text"))
+        .filter_map(|content| string_field(content, "text"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    (!text.is_empty()).then_some(text)
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum AssistantMessageSource {
+    Event,
+    Response,
+}
+
+fn convert_messages(messages: Vec<CodexMessage>) -> Vec<AgentMessage> {
+    let mut converted = Vec::with_capacity(messages.len());
+    let mut pending_assistant: Option<(usize, AssistantMessageSource)> = None;
+
+    for message in messages {
+        let is_message_record = is_message_record(&message);
+        let source = assistant_message_source(&message);
+        let message = AgentMessage::from(message);
+
+        if message.typ != "message" || message.text.is_none() {
+            if is_message_record {
+                pending_assistant = None;
+            }
+            converted.push(message);
+            continue;
+        }
+
+        let Some(source) = source else {
+            pending_assistant = None;
+            converted.push(message);
+            continue;
+        };
+
+        if let Some((index, pending_source)) = pending_assistant {
+            let pending = &mut converted[index];
+            if source != pending_source && is_same_utterance(pending, &message) {
+                if pending.phase.is_none() {
+                    pending.phase = message.phase;
+                }
+                pending_assistant = None;
+                continue;
+            }
+        }
+
+        let index = converted.len();
+        converted.push(message);
+        pending_assistant = Some((index, source));
+    }
+
+    converted
+}
+
+fn is_message_record(message: &CodexMessage) -> bool {
+    matches!(
+        (message.typ.as_str(), string_field(&message.payload, "type")),
+        ("event_msg", Some("user_message" | "agent_message")) | ("response_item", Some("message"))
+    )
+}
+
+fn assistant_message_source(message: &CodexMessage) -> Option<AssistantMessageSource> {
+    match (
+        message.typ.as_str(),
+        string_field(&message.payload, "type"),
+        string_field(&message.payload, "role"),
+    ) {
+        ("event_msg", Some("agent_message"), _) => Some(AssistantMessageSource::Event),
+        ("response_item", Some("message"), Some("assistant")) => {
+            Some(AssistantMessageSource::Response)
+        }
+        _ => None,
+    }
+}
+
+fn is_same_utterance(left: &AgentMessage, right: &AgentMessage) -> bool {
+    left.role == right.role
+        && left.text == right.text
+        && (left.phase == right.phase || left.phase.is_none() || right.phase.is_none())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CodexMessage, convert_messages};
+    use crate::agent::provider::AgentMessage;
+
+    #[test]
+    fn converts_assistant_response_output_text() {
+        let message = parse_message(
+            r#"{
+                "timestamp":"2026-07-13T01:00:00Z",
+                "type":"response_item",
+                "payload":{
+                    "type":"message",
+                    "id":"answer",
+                    "role":"assistant",
+                    "content":[
+                        {"type":"reasoning","text":"hidden"},
+                        {"type":"output_text","text":"Visible answer"}
+                    ],
+                    "phase":"final_answer"
+                }
+            }"#,
+        );
+
+        let converted = AgentMessage::from(message);
+
+        assert_eq!(converted.typ, "message");
+        assert_eq!(converted.role.as_deref(), Some("assistant"));
+        assert_eq!(converted.text.as_deref(), Some("Visible answer"));
+        assert_eq!(converted.phase.as_deref(), Some("final_answer"));
+    }
+
+    #[test]
+    fn ignores_response_items_without_assistant_output_text() {
+        for payload in [
+            r#"{"type":"message","role":"user","content":[{"type":"output_text","text":"User"}]}"#,
+            r#"{"type":"message","role":"assistant","content":[{"type":"input_text","text":"Input"}]}"#,
+        ] {
+            let message = parse_message(format!(
+                r#"{{"timestamp":"2026-07-13T01:00:00Z","type":"response_item","payload":{payload}}}"#
+            ));
+
+            let converted = AgentMessage::from(message);
+
+            assert_ne!(converted.typ, "message");
+            assert!(converted.text.is_none());
+        }
+    }
+
+    #[test]
+    fn deduplicates_only_matching_cross_representation_messages() {
+        let messages = [
+            event_message("Repeated", "commentary"),
+            response_message("Repeated", "commentary"),
+            event_message("First update", "commentary"),
+            event_message("Second update", "commentary"),
+        ];
+
+        let converted = convert_messages(messages.into_iter().map(parse_message).collect());
+        let texts = converted
+            .iter()
+            .filter_map(|message| message.text.as_deref())
+            .collect::<Vec<_>>();
+
+        assert_eq!(texts, ["Repeated", "First update", "Second update"]);
+    }
+
+    #[test]
+    fn does_not_deduplicate_across_an_ignored_message_record() {
+        let messages = [
+            event_message("Repeated", "commentary"),
+            r#"{"timestamp":"2026-07-13T01:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Continue"}]}}"#.to_string(),
+            response_message("Repeated", "commentary"),
+        ];
+
+        let converted = convert_messages(messages.into_iter().map(parse_message).collect());
+        let texts = converted
+            .iter()
+            .filter_map(|message| message.text.as_deref())
+            .collect::<Vec<_>>();
+
+        assert_eq!(texts, ["Repeated", "Repeated"]);
+    }
+
+    fn parse_message(json: impl AsRef<str>) -> CodexMessage {
+        serde_json::from_str(json.as_ref()).unwrap()
+    }
+
+    fn event_message(text: &str, phase: &str) -> String {
+        format!(
+            r#"{{"timestamp":"2026-07-13T01:00:00Z","type":"event_msg","payload":{{"type":"agent_message","message":"{text}","phase":"{phase}"}}}}"#
+        )
+    }
+
+    fn response_message(text: &str, phase: &str) -> String {
+        format!(
+            r#"{{"timestamp":"2026-07-13T01:00:01Z","type":"response_item","payload":{{"type":"message","role":"assistant","content":[{{"type":"output_text","text":"{text}"}}],"phase":"{phase}"}}}}"#
+        )
+    }
 }

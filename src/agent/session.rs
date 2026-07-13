@@ -219,6 +219,22 @@ mod tests {
                     "phase": "commentary"
                 }
             }
+            {
+                "timestamp": "2026-07-12T01:03:00Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "id": "final-answer",
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": "Implementation plan"
+                        }
+                    ],
+                    "phase": "final_answer"
+                }
+            }
         "#;
         let (dir, provider) = test_provider(ProviderEnum::Codex, "session.jsonl", data);
 
@@ -231,6 +247,9 @@ mod tests {
         let messages = session.messages.unwrap();
         assert_eq!(messages[0].text, "Read this");
         assert_eq!(messages[1].phase.as_deref(), Some("commentary"));
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[2].text, "Implementation plan");
+        assert_eq!(messages[2].phase.as_deref(), Some("final_answer"));
         fs::remove_dir_all(dir).unwrap();
     }
 
