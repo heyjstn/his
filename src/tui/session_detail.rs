@@ -6,6 +6,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
+use std::path::Path;
 
 const USER_ROLE: &str = "user";
 const ASSISTANT_ROLE: &str = "assistant";
@@ -144,6 +145,7 @@ fn commentary_lines(message: &SessionMessage) -> Vec<Line<'_>> {
 
 fn edit_tool_lines(message: &SessionMessage) -> Vec<Line<'_>> {
     let style = assistant_text_style(message);
+    let language = edit_language(message.tool_path.as_deref());
     let mut heading_spans = vec![Span::raw(TOOL_CALL_MARKER), Span::raw(&message.text)];
     if let Some(path) = &message.tool_path {
         heading_spans.push(Span::raw(" "));
@@ -157,14 +159,23 @@ fn edit_tool_lines(message: &SessionMessage) -> Vec<Line<'_>> {
     heading.style = style;
     let mut lines = vec![heading];
     for content in &message.tool_contents {
-        lines.extend(fenced_edit_content_lines(content, style));
+        lines.extend(fenced_edit_content_lines(
+            content,
+            language.as_deref(),
+            style,
+        ));
     }
     lines
 }
 
-fn fenced_edit_content_lines(content: &str, style: Style) -> Vec<Line<'static>> {
+fn fenced_edit_content_lines(
+    content: &str,
+    language: Option<&str>,
+    style: Style,
+) -> Vec<Line<'static>> {
     let source_fence = source_code_fence(content);
-    let markdown = format!("{source_fence}\n{content}\n{source_fence}");
+    let language = language.unwrap_or_default();
+    let markdown = format!("{source_fence}{language}\n{content}\n{source_fence}");
     render_markdown(&markdown)
         .lines
         .into_iter()
@@ -178,6 +189,15 @@ fn fenced_edit_content_lines(content: &str, style: Style) -> Vec<Line<'static>> 
                 .collect(),
         })
         .collect()
+}
+
+fn edit_language(path: Option<&str>) -> Option<String> {
+    let extension = Path::new(path?).extension()?.to_str()?;
+    let is_safe = !extension.is_empty()
+        && extension
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "+-_#".contains(character));
+    is_safe.then(|| extension.to_ascii_lowercase())
 }
 
 fn source_code_fence(content: &str) -> String {
@@ -224,7 +244,7 @@ fn provider_name(provider: &ProviderEnum) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        ASSISTANT_ROLE, CODE_FENCE, COMMENTARY_FOREGROUND, EMPTY_SESSION_MESSAGE,
+        ASSISTANT_ROLE, CODE_FENCE, COMMENTARY_FOREGROUND, EMPTY_SESSION_MESSAGE, edit_language,
         session_message_lines, source_code_fence,
     };
     use crate::agent::provider::ProviderEnum;
@@ -391,6 +411,7 @@ mod tests {
     #[test]
     fn renders_pi_edit_path_and_fenced_content_in_commentary() {
         const PI_PATH: &str = "/Users/triluu/dotfiles/nvim/lua/plugins/lsp.lua";
+        const LUA_CODE_FENCE: &str = "```lua";
         let messages = [
             message(ProviderEnum::Codex, "assistant", "commentary", "Checking"),
             edit_message(
@@ -422,15 +443,15 @@ mod tests {
             .unwrap();
         assert_eq!(
             &rendered_lines[pi_heading_index + 1..pi_heading_index + 5],
-            [CODE_FENCE, "local enabled = true", "", CODE_FENCE]
+            [LUA_CODE_FENCE, "local enabled = true", "", CODE_FENCE]
         );
         assert_eq!(
             &rendered_lines[pi_heading_index + 5..pi_heading_index + 8],
-            [CODE_FENCE, "", CODE_FENCE]
+            [LUA_CODE_FENCE, "", CODE_FENCE]
         );
         assert_eq!(
             &rendered_lines[pi_heading_index + 8..pi_heading_index + 11],
-            [CODE_FENCE, "return enabled", CODE_FENCE]
+            [LUA_CODE_FENCE, "return enabled", CODE_FENCE]
         );
 
         let path_span = lines
@@ -439,6 +460,32 @@ mod tests {
             .find(|span| span.content == PI_PATH)
             .unwrap();
         assert!(path_span.style.add_modifier.contains(Modifier::UNDERLINED));
+    }
+
+    #[test]
+    fn detects_safe_edit_languages_from_file_extensions() {
+        assert_eq!(
+            edit_language(Some("/tmp/plugin.lua")).as_deref(),
+            Some("lua")
+        );
+        assert_eq!(edit_language(Some("/tmp/main.RS")).as_deref(), Some("rs"));
+        assert_eq!(edit_language(Some("/tmp/Makefile")), None);
+        assert_eq!(edit_language(Some("/tmp/file.bad language")), None);
+    }
+
+    #[test]
+    fn renders_untyped_edit_content_without_a_file_extension() {
+        let messages = [edit_message(
+            ProviderEnum::Pi,
+            "edit",
+            Some("/tmp/Makefile"),
+            &["all:"],
+        )];
+
+        assert_eq!(
+            &rendered_lines(&messages, true)[2..5],
+            [CODE_FENCE, "all:", CODE_FENCE]
+        );
     }
 
     #[test]
