@@ -9,10 +9,10 @@ use ratatui::widgets::{Paragraph, Wrap};
 
 const USER_ROLE: &str = "user";
 const ASSISTANT_ROLE: &str = "assistant";
-const CODEX_COMMENTARY_PHASE: &str = "commentary";
+const COMMENTARY_PHASE: &str = "commentary";
 const COMMENTARY_BULLET: &str = "• ";
 const EMPTY_SESSION_MESSAGE: &str = "No readable user or assistant messages in this session.";
-const CODEX_COMMENTARY_FOREGROUND: Color = Color::Gray;
+const COMMENTARY_FOREGROUND: Color = Color::Gray;
 
 pub(super) fn render_header(frame: &mut Frame, session: &Session, area: Rect) {
     frame.render_widget(
@@ -76,9 +76,9 @@ fn session_message_lines(messages: &[SessionMessage]) -> Vec<Line<'_>> {
     let mut messages = messages.iter().peekable();
     while let Some(message) = messages.next() {
         lines.push(message_header(message));
-        if is_codex_commentary(message) {
+        if is_commentary(message) {
             lines.extend(commentary_lines(message));
-            while let Some(commentary) = messages.next_if(|message| is_codex_commentary(message)) {
+            while let Some(commentary) = messages.next_if(|message| is_commentary(message)) {
                 lines.extend(commentary_lines(commentary));
             }
         } else {
@@ -106,10 +106,8 @@ fn message_header(message: &SessionMessage) -> Line<'_> {
     ])
 }
 
-fn is_codex_commentary(message: &SessionMessage) -> bool {
-    message.provider == ProviderEnum::Codex
-        && message.role == ASSISTANT_ROLE
-        && message.phase.as_deref() == Some(CODEX_COMMENTARY_PHASE)
+fn is_commentary(message: &SessionMessage) -> bool {
+    message.role == ASSISTANT_ROLE && message.phase.as_deref() == Some(COMMENTARY_PHASE)
 }
 
 fn commentary_lines(message: &SessionMessage) -> Vec<Line<'_>> {
@@ -117,7 +115,7 @@ fn commentary_lines(message: &SessionMessage) -> Vec<Line<'_>> {
     let Some(first_line) = rendered.first_mut() else {
         return vec![Line::styled(
             COMMENTARY_BULLET,
-            codex_assistant_text_style(message),
+            assistant_text_style(message),
         )];
     };
     first_line.spans.insert(0, Span::raw(COMMENTARY_BULLET));
@@ -125,7 +123,7 @@ fn commentary_lines(message: &SessionMessage) -> Vec<Line<'_>> {
 }
 
 fn message_text_lines(message: &SessionMessage) -> Vec<Line<'_>> {
-    let style = codex_assistant_text_style(message);
+    let style = assistant_text_style(message);
     render_markdown(&message.text)
         .lines
         .into_iter()
@@ -136,12 +134,12 @@ fn message_text_lines(message: &SessionMessage) -> Vec<Line<'_>> {
         .collect()
 }
 
-fn codex_assistant_text_style(message: &SessionMessage) -> Style {
-    if !is_codex_commentary(message) {
+fn assistant_text_style(message: &SessionMessage) -> Style {
+    if !is_commentary(message) {
         return Style::default();
     }
 
-    Style::default().fg(CODEX_COMMENTARY_FOREGROUND)
+    Style::default().fg(COMMENTARY_FOREGROUND)
 }
 
 fn provider_name(provider: &ProviderEnum) -> &'static str {
@@ -154,7 +152,7 @@ fn provider_name(provider: &ProviderEnum) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        ASSISTANT_ROLE, CODEX_COMMENTARY_FOREGROUND, EMPTY_SESSION_MESSAGE, session_message_lines,
+        ASSISTANT_ROLE, COMMENTARY_FOREGROUND, EMPTY_SESSION_MESSAGE, session_message_lines,
     };
     use crate::agent::provider::ProviderEnum;
     use crate::agent::session::SessionMessage;
@@ -244,8 +242,8 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("Running the focused tests") && line.contains('•'))
         );
-        assert_eq!(lines[1].style.fg, Some(CODEX_COMMENTARY_FOREGROUND));
-        assert_eq!(lines[2].style.fg, Some(CODEX_COMMENTARY_FOREGROUND));
+        assert_eq!(lines[1].style.fg, Some(COMMENTARY_FOREGROUND));
+        assert_eq!(lines[2].style.fg, Some(COMMENTARY_FOREGROUND));
     }
 
     #[test]
@@ -290,7 +288,7 @@ mod tests {
     }
 
     #[test]
-    fn keeps_pi_assistant_messages_separate() {
+    fn renders_continuous_pi_thinking_as_one_bulleted_assistant_message() {
         let messages = [
             message(ProviderEnum::Pi, "assistant", "commentary", "First"),
             message(ProviderEnum::Pi, "assistant", "commentary", "Second"),
@@ -299,9 +297,16 @@ mod tests {
         let rendered_lines = rendered_lines(&messages);
         let lines = session_message_lines(&messages);
 
-        assert_eq!(role_header_count(&rendered_lines, ASSISTANT_ROLE), 2);
-        assert!(rendered_lines.iter().all(|line| !line.contains('•')));
-        assert!(lines.iter().all(|line| line.style.bg.is_none()));
+        assert_eq!(role_header_count(&rendered_lines, ASSISTANT_ROLE), 1);
+        assert_eq!(
+            rendered_lines
+                .iter()
+                .filter(|line| line.contains('•'))
+                .count(),
+            2
+        );
+        assert_eq!(lines[1].style.fg, Some(COMMENTARY_FOREGROUND));
+        assert_eq!(lines[2].style.fg, Some(COMMENTARY_FOREGROUND));
     }
 
     #[test]
