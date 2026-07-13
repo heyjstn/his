@@ -24,6 +24,9 @@ pub struct SessionMessage {
     pub role: String,
     pub text: String,
     pub phase: Option<String>,
+    pub tool_path: Option<String>,
+    #[serde(default)]
+    pub tool_contents: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -132,6 +135,8 @@ fn parse_session(provider: &Provider, path: &Path, include_messages: bool) -> Re
                     .unwrap_or_else(|| "message".to_string()),
                 text: message.text.clone().unwrap_or_default(),
                 phase: message.phase.clone(),
+                tool_path: message.tool_path.clone(),
+                tool_contents: message.tool_contents.clone(),
             })
             .collect()
     });
@@ -173,7 +178,7 @@ mod tests {
             "\n",
             r#"{"type":"message","id":"user-1","parentId":null,"timestamp":"2026-07-12T01:01:00Z","message":{"role":"user","content":[{"type":"text","text":"Hello"}],"timestamp":1}}"#,
             "\n",
-            r#"{"type":"message","id":"assistant-1","parentId":"user-1","timestamp":"2026-07-12T01:02:00Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Checking the request","thinkingSignature":"signature"},{"type":"text","text":"Hi there"}],"api":"responses","provider":"test","model":"test-model","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"input":0.0,"output":0.0,"cacheRead":0.0,"cacheWrite":0.0,"total":0.0}},"stopReason":"stop","timestamp":2,"responseId":"response-1"}}"#,
+            r#"{"type":"message","id":"assistant-1","parentId":"user-1","timestamp":"2026-07-12T01:02:00Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Checking the request","thinkingSignature":"signature"},{"type":"toolCall","id":"call-1","name":"read","arguments":{}},{"type":"toolCall","id":"call-2","name":"edit","arguments":{"path":"/tmp/pi/file.rs","edits":[{"oldText":"before","newText":"after"}]}},{"type":"text","text":"Hi there"}],"api":"responses","provider":"test","model":"test-model","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"input":0.0,"output":0.0,"cacheRead":0.0,"cacheWrite":0.0,"total":0.0}},"stopReason":"stop","timestamp":2,"responseId":"response-1"}}"#,
         );
         let (dir, provider) = test_provider(ProviderEnum::Pi, "session.jsonl", data);
 
@@ -184,12 +189,16 @@ mod tests {
 
         assert_eq!(session.first_message, "Hello");
         let messages = session.messages.unwrap();
-        assert_eq!(messages.len(), 3);
+        assert_eq!(messages.len(), 4);
         assert_eq!(messages[0].role, "user");
         assert_eq!(messages[1].text, "Checking the request");
         assert_eq!(messages[1].phase.as_deref(), Some("commentary"));
-        assert_eq!(messages[2].text, "Hi there");
-        assert_eq!(messages[2].phase, None);
+        assert_eq!(messages[2].text, "edit");
+        assert_eq!(messages[2].phase.as_deref(), Some("tool_call"));
+        assert_eq!(messages[2].tool_path.as_deref(), Some("/tmp/pi/file.rs"));
+        assert_eq!(messages[2].tool_contents, ["after"]);
+        assert_eq!(messages[3].text, "Hi there");
+        assert_eq!(messages[3].phase, None);
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -220,6 +229,28 @@ mod tests {
                     "type": "agent_message",
                     "message": "Working on it",
                     "phase": "commentary"
+                }
+            }
+            {
+                "timestamp": "2026-07-12T01:02:30Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call",
+                    "id": "tool-call",
+                    "name": "exec_command",
+                    "arguments": "{}",
+                    "call_id": "call-1"
+                }
+            }
+            {
+                "timestamp": "2026-07-12T01:02:45Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "custom_tool_call",
+                    "id": "edit-call",
+                    "name": "apply_patch",
+                    "input": "*** Begin Patch\n+edited content\n*** End Patch",
+                    "call_id": "call-2"
                 }
             }
             {

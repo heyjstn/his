@@ -1,9 +1,12 @@
-use crate::agent::provider::{AgentMessage, FromProviderMessage};
+use crate::agent::provider::{
+    AgentMessage, COMMENTARY_PHASE, FromProviderMessage, TOOL_CALL_PHASE,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-const COMMENTARY_PHASE: &str = "commentary";
 const THINKING_CONTENT_TYPE: &str = "thinking";
+const TOOL_CALL_CONTENT_TYPE: &str = "toolCall";
+const EDIT_TOOL: &str = "edit";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -175,22 +178,47 @@ impl FromProviderMessage for PiMessage {
         let Message::Assistant(assistant) = &event.message else {
             return vec![self.into()];
         };
-        let Some(thinking) = content_thinking(&assistant.content) else {
-            return vec![self.into()];
-        };
+        let thinking = content_thinking(&assistant.content);
+        let tool_calls = content_tool_calls(&assistant.content)
+            .filter(|tool_call| tool_call.name == EDIT_TOOL)
+            .cloned()
+            .collect::<Vec<_>>();
 
-        let message = AgentMessage::from(self);
-        let commentary = AgentMessage {
-            id: format!("{}:{THINKING_CONTENT_TYPE}", message.id),
-            text: Some(thinking),
-            phase: Some(COMMENTARY_PHASE.to_string()),
-            ..message.clone()
-        };
-        if message.text.is_none() {
-            return vec![commentary];
+        let mut message = AgentMessage::from(self);
+        message.tool_call_id = None;
+        message.tool_name = None;
+        let mut messages =
+            Vec::with_capacity(1 + tool_calls.len() + usize::from(message.text.is_some()));
+
+        if let Some(thinking) = thinking {
+            messages.push(AgentMessage {
+                id: format!("{}:{THINKING_CONTENT_TYPE}", message.id),
+                text: Some(thinking),
+                phase: Some(COMMENTARY_PHASE.to_string()),
+                ..message.clone()
+            });
         }
 
-        vec![commentary, message]
+        messages.extend(tool_calls.into_iter().map(|tool_call| {
+            let tool_path = edit_path(&tool_call);
+            let tool_contents = edit_contents(&tool_call);
+            AgentMessage {
+                id: format!("{}:{TOOL_CALL_CONTENT_TYPE}:{}", message.id, tool_call.id),
+                text: Some(tool_call.name.clone()),
+                phase: Some(TOOL_CALL_PHASE.to_string()),
+                tool_call_id: Some(tool_call.id),
+                tool_name: Some(tool_call.name),
+                tool_path,
+                tool_contents,
+                ..message.clone()
+            }
+        }));
+
+        if message.text.is_some() {
+            messages.push(message);
+        }
+
+        messages
     }
 }
 
@@ -210,6 +238,8 @@ impl From<PiMessage> for AgentMessage {
                 model: None,
                 tool_call_id: None,
                 tool_name: None,
+                tool_path: None,
+                tool_contents: Vec::new(),
                 is_error: None,
             },
             PiMessage::ModelChange(event) => AgentMessage {
@@ -225,6 +255,8 @@ impl From<PiMessage> for AgentMessage {
                 model: Some(event.model_id),
                 tool_call_id: None,
                 tool_name: None,
+                tool_path: None,
+                tool_contents: Vec::new(),
                 is_error: None,
             },
             PiMessage::ThinkingLevelChange(event) => AgentMessage {
@@ -240,6 +272,8 @@ impl From<PiMessage> for AgentMessage {
                 model: None,
                 tool_call_id: None,
                 tool_name: None,
+                tool_path: None,
+                tool_contents: Vec::new(),
                 is_error: None,
             },
             PiMessage::Message(event) => {
@@ -290,6 +324,8 @@ impl From<PiMessage> for AgentMessage {
                     model,
                     tool_call_id,
                     tool_name,
+                    tool_path: None,
+                    tool_contents: Vec::new(),
                     is_error,
                 }
             }
@@ -328,32 +364,69 @@ fn content_thinking(content: &[ContentPart]) -> Option<String> {
 }
 
 fn first_tool_call(content: &[ContentPart]) -> Option<&ToolCallContent> {
-    content.iter().find_map(|part| match part {
+    content_tool_calls(content).next()
+}
+
+fn content_tool_calls(content: &[ContentPart]) -> impl Iterator<Item = &ToolCallContent> {
+    content.iter().filter_map(|part| match part {
         ContentPart::ToolCall(content) => Some(content),
         _ => None,
     })
 }
 
+fn edit_path(tool_call: &ToolCallContent) -> Option<String> {
+    tool_call
+        .arguments
+        .get("path")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+fn edit_contents(tool_call: &ToolCallContent) -> Vec<String> {
+    tool_call
+        .arguments
+        .get("edits")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|edit| edit.get("newText").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{COMMENTARY_PHASE, PiMessage};
-    use crate::agent::provider::FromProviderMessage;
+    use super::PiMessage;
+    use crate::agent::provider::{COMMENTARY_PHASE, FromProviderMessage, TOOL_CALL_PHASE};
 
     #[test]
-    fn converts_thinking_only_assistant_content_to_commentary() {
+    fn converts_only_edit_tool_calls_to_commentary_messages() {
         let message = serde_json::from_str::<PiMessage>(
-            r#"{"type":"message","id":"assistant-1","parentId":"user-1","timestamp":"2026-07-12T01:02:00Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Inspecting the repository","thinkingSignature":"signature"},{"type":"toolCall","id":"call-1","name":"read","arguments":{}}],"api":"responses","provider":"test","model":"test-model","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"input":0.0,"output":0.0,"cacheRead":0.0,"cacheWrite":0.0,"total":0.0}},"stopReason":"toolUse","timestamp":2,"responseId":"response-1"}}"#,
+            r#"{"type":"message","id":"assistant-1","parentId":"user-1","timestamp":"2026-07-12T01:02:00Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Inspecting the repository","thinkingSignature":"signature"},{"type":"toolCall","id":"call-1","name":"read","arguments":{}},{"type":"toolCall","id":"call-2","name":"edit","arguments":{"path":"/tmp/first.lua","edits":[{"oldText":"old","newText":"first line\n"},{"oldText":"remove","newText":""},{"oldText":"before","newText":"second line"}]}},{"type":"toolCall","id":"call-3","name":"bash","arguments":{}},{"type":"toolCall","id":"call-4","name":"edit","arguments":{"path":"/tmp/second.lua","edits":[{"oldText":"before","newText":"after"}]}}],"api":"responses","provider":"test","model":"test-model","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"input":0.0,"output":0.0,"cacheRead":0.0,"cacheWrite":0.0,"total":0.0}},"stopReason":"toolUse","timestamp":2,"responseId":"response-1"}}"#,
         )
         .unwrap();
 
         let converted = message.into_agent_messages();
 
-        assert_eq!(converted.len(), 1);
+        assert_eq!(converted.len(), 3);
         assert_eq!(
             converted[0].text.as_deref(),
             Some("Inspecting the repository")
         );
         assert_eq!(converted[0].phase.as_deref(), Some(COMMENTARY_PHASE));
-        assert_eq!(converted[0].tool_name.as_deref(), Some("read"));
+        assert_eq!(converted[0].tool_name, None);
+        assert_eq!(converted[1].text.as_deref(), Some("edit"));
+        assert_eq!(converted[1].phase.as_deref(), Some(TOOL_CALL_PHASE));
+        assert_eq!(converted[1].tool_call_id.as_deref(), Some("call-2"));
+        assert_eq!(converted[1].tool_path.as_deref(), Some("/tmp/first.lua"));
+        assert_eq!(
+            converted[1].tool_contents,
+            ["first line\n", "", "second line"]
+        );
+        assert_eq!(converted[2].text.as_deref(), Some("edit"));
+        assert_eq!(converted[2].phase.as_deref(), Some(TOOL_CALL_PHASE));
+        assert_eq!(converted[2].tool_call_id.as_deref(), Some("call-4"));
+        assert_eq!(converted[2].tool_path.as_deref(), Some("/tmp/second.lua"));
+        assert_eq!(converted[2].tool_contents, ["after"]);
     }
 }

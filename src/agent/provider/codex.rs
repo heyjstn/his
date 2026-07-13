@@ -82,6 +82,8 @@ impl From<CodexMessage> for AgentMessage {
             model: string_field(&value.payload, "model").map(str::to_string),
             tool_call_id: string_field(&value.payload, "call_id").map(str::to_string),
             tool_name: string_field(&value.payload, "name").map(str::to_string),
+            tool_path: None,
+            tool_contents: Vec::new(),
             is_error: None,
         }
     }
@@ -225,6 +227,29 @@ mod tests {
 
             assert_ne!(converted.typ, "message");
             assert!(converted.text.is_none());
+        }
+    }
+
+    #[test]
+    fn skips_all_tool_calls() {
+        for payload in [
+            r#"{"type":"custom_tool_call","name":"apply_patch","input":"*** Begin Patch"}"#,
+            r#"{"type":"function_call","name":"exec_command"}"#,
+            r#"{"type":"function_call","name":"apply_patch"}"#,
+            r#"{"type":"custom_tool_call","name":"exec_command"}"#,
+            r#"{"type":"function_call","name":"request_user_input"}"#,
+            r#"{"type":"function_call","name":"update_plan"}"#,
+        ] {
+            let call = parse_message(format!(
+                r#"{{"timestamp":"2026-07-13T01:00:00Z","type":"response_item","payload":{payload}}}"#
+            ));
+
+            let converted = AgentMessage::from(call);
+
+            assert_ne!(converted.typ, "message");
+            assert!(converted.role.is_none());
+            assert!(converted.text.is_none());
+            assert!(converted.phase.is_none());
         }
     }
 

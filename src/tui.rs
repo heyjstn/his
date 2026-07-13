@@ -28,10 +28,11 @@ fn render(frame: &mut Frame, app: &App) {
     session_detail::render_messages(
         frame,
         session.messages.as_deref().unwrap_or_default(),
+        app.commentary_visible(),
         app.detail_scroll(),
         body,
     );
-    session_detail::render_footer(frame, footer);
+    session_detail::render_footer(frame, app.commentary_visible(), footer);
 }
 
 #[cfg(test)]
@@ -63,14 +64,10 @@ mod tests {
     fn renders_session_detail_components_in_their_layout_regions() {
         let mut terminal = test_terminal();
         let mut app = App::new(Vec::new());
-        app.show_session(session(Some(vec![SessionMessage {
-            id: "message".to_string(),
-            provider: ProviderEnum::Codex,
-            ts: "2026-07-13T01:01:00Z".to_string(),
-            role: "assistant".to_string(),
-            text: "Rendered answer".to_string(),
-            phase: Some("final_answer".to_string()),
-        }])));
+        app.show_session(session(Some(vec![
+            message("commentary", "Hidden commentary"),
+            message("final_answer", "Rendered answer"),
+        ])));
 
         terminal.draw(|frame| render(frame, &app)).unwrap();
 
@@ -78,7 +75,15 @@ mod tests {
         assert!(buffer_row(buffer, 0).starts_with("Codex  /work/project"));
         assert!(buffer_row(buffer, 2).starts_with("assistant"));
         assert_eq!(buffer_row(buffer, 3), "Rendered answer");
-        assert!(buffer_row(buffer, 8).starts_with("up/down scroll"));
+        assert!(!buffer_contains(buffer, "Hidden commentary"));
+        assert!(buffer_row(buffer, 8).contains("ctrl+o show commentary"));
+
+        app.toggle_commentary_visibility();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        assert!(buffer_contains(buffer, "Hidden commentary"));
+        assert!(buffer_row(buffer, 8).contains("ctrl+o hide commentary"));
     }
 
     fn test_terminal() -> Terminal<TestBackend> {
@@ -94,6 +99,23 @@ mod tests {
             messages,
             first_message: "First message".to_string(),
         }
+    }
+
+    fn message(phase: &str, text: &str) -> SessionMessage {
+        SessionMessage {
+            id: format!("{phase}-{text}"),
+            provider: ProviderEnum::Codex,
+            ts: "2026-07-13T01:01:00Z".to_string(),
+            role: "assistant".to_string(),
+            text: text.to_string(),
+            phase: Some(phase.to_string()),
+            tool_path: None,
+            tool_contents: Vec::new(),
+        }
+    }
+
+    fn buffer_contains(buffer: &Buffer, expected: &str) -> bool {
+        (0..buffer.area.height as usize).any(|row| buffer_row(buffer, row).contains(expected))
     }
 
     fn buffer_row(buffer: &Buffer, row: usize) -> String {
