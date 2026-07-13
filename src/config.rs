@@ -144,6 +144,57 @@ mod tests {
     }
 
     #[test]
+    fn resolves_environment_variables_in_provider_directories() {
+        const TEST_HOME: &str = "/home/test-user";
+        const TEST_PWD: &str = "/work/his";
+
+        let config = from_toml_with_environment(
+            r#"
+                [[providers]]
+                name = "pi"
+                dir = "$PWD/tests/.pi/agent/sessions"
+
+                [[providers]]
+                name = "codex"
+                dir = "$HOME/.codex/sessions"
+            "#,
+            |variable| match variable {
+                "HOME" => Ok(TEST_HOME.to_owned()),
+                "PWD" => Ok(TEST_PWD.to_owned()),
+                _ => Err(VarError::NotPresent),
+            },
+        )
+        .unwrap();
+
+        let providers = config.providers.unwrap();
+        assert_eq!(
+            PathBuf::from(&providers[0].dir),
+            PathBuf::from(TEST_PWD).join("tests/.pi/agent/sessions")
+        );
+        assert_eq!(
+            PathBuf::from(&providers[1].dir),
+            PathBuf::from(TEST_HOME).join(".codex/sessions")
+        );
+    }
+
+    #[test]
+    fn rejects_undefined_environment_variables_in_provider_directories() {
+        let error = from_toml_with_environment(
+            r#"
+                [[providers]]
+                name = "pi"
+                dir = "$HIS_CONFIG_TEST_UNDEFINED_PROVIDER_DIRECTORY"
+            "#,
+            |_| Err(VarError::NotPresent),
+        )
+        .unwrap_err();
+
+        assert!(format!("{error:#}").starts_with(
+            "failed to resolve environment variables in provider directory \"$HIS_CONFIG_TEST_UNDEFINED_PROVIDER_DIRECTORY\""
+        ));
+    }
+
+    #[test]
     fn parse_error_includes_config_path() {
         let directory = test_directory();
         let path = directory.join(CONFIG_FILE_NAME);
