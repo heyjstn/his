@@ -1,4 +1,3 @@
-use super::markdown;
 use crate::session::{MessagePhase, MessageRole, SessionDetail, SessionMessage};
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -181,7 +180,7 @@ fn fenced_edit_content_lines(
     let source_fence = source_code_fence(content);
     let language = language.unwrap_or_default();
     let markdown = format!("{source_fence}{language}\n{content}\n{source_fence}");
-    markdown::render(&markdown)
+    tui_markdown::from_str(&markdown)
         .lines
         .into_iter()
         .map(|line| Line {
@@ -221,7 +220,7 @@ fn source_code_fence(content: &str) -> String {
 
 fn message_text_lines(message: &SessionMessage) -> Vec<Line<'_>> {
     let style = assistant_text_style(message);
-    markdown::render(&message.text)
+    tui_markdown::from_str(&message.text)
         .lines
         .into_iter()
         .map(|mut line| {

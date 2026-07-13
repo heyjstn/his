@@ -10,7 +10,7 @@ const SEARCH_PLACEHOLDER: &str = "Type to search";
 const SELECTED_MARKER: &str = "> ";
 const UNSELECTED_MARKER: &str = "  ";
 const MARKER_WIDTH: usize = 2;
-const AGENT_WIDTH: usize = 7;
+const AGENT_GAP_WIDTH: usize = 2;
 const ELAPSED_WIDTH: usize = 9;
 const MESSAGE_GAP_WIDTH: usize = 4;
 const MIN_MESSAGE_WIDTH: usize = 2;
@@ -71,28 +71,45 @@ pub(super) fn render_footer(frame: &mut Frame, area: Rect) {
 #[derive(Clone, Copy)]
 struct RowLayout {
     width: usize,
+    agent_width: usize,
     cwd_width: usize,
 }
 
 impl RowLayout {
     fn new(width: usize, sessions: &[&SessionSummary]) -> Self {
+        let max_agent_width = sessions
+            .iter()
+            .map(|session| display_width(&session.agent.to_string()))
+            .max()
+            .unwrap_or_default();
+        let minimum_fixed_width =
+            MARKER_WIDTH + AGENT_GAP_WIDTH + ELAPSED_WIDTH + MESSAGE_GAP_WIDTH + MIN_MESSAGE_WIDTH;
+        let agent_width = max_agent_width.min(width.saturating_sub(minimum_fixed_width));
         let max_cwd_width = sessions
             .iter()
             .map(|session| display_width(&session.cwd.to_string_lossy()))
             .max()
             .unwrap_or_default();
-        let fixed_width =
-            MARKER_WIDTH + AGENT_WIDTH + ELAPSED_WIDTH + MESSAGE_GAP_WIDTH + MIN_MESSAGE_WIDTH;
+        let fixed_width = minimum_fixed_width + agent_width;
         let cwd_width = max_cwd_width
             .min(MAX_CWD_WIDTH)
             .min(width.saturating_sub(fixed_width));
 
-        Self { width, cwd_width }
+        Self {
+            width,
+            agent_width,
+            cwd_width,
+        }
     }
 
     fn message_width(self) -> usize {
         self.width.saturating_sub(
-            MARKER_WIDTH + AGENT_WIDTH + ELAPSED_WIDTH + self.cwd_width + MESSAGE_GAP_WIDTH,
+            MARKER_WIDTH
+                + self.agent_width
+                + AGENT_GAP_WIDTH
+                + ELAPSED_WIDTH
+                + self.cwd_width
+                + MESSAGE_GAP_WIDTH,
         )
     }
 }
@@ -116,7 +133,11 @@ fn session_row(session: &SessionSummary, selected: bool, layout: RowLayout) -> L
 
     ListItem::new(Line::from(vec![
         Span::raw(marker),
-        Span::styled(fixed_width(&session.agent.to_string(), AGENT_WIDTH), style),
+        Span::styled(
+            fixed_width(&session.agent.to_string(), layout.agent_width),
+            style,
+        ),
+        Span::styled(" ".repeat(AGENT_GAP_WIDTH), style),
         Span::styled(
             fixed_width(&elapsed(session.timestamp.as_str()), ELAPSED_WIDTH),
             style,
@@ -188,10 +209,17 @@ fn elapsed_at(timestamp: &str, now: DateTime<Utc>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_CWD_WIDTH, RowLayout, elapsed_at, fixed_width, truncate_end};
+    use super::{
+        AGENT_GAP_WIDTH, ELAPSED_WIDTH, MARKER_WIDTH, MAX_CWD_WIDTH, MESSAGE_GAP_WIDTH,
+        MIN_MESSAGE_WIDTH, RowLayout, display_width, elapsed_at, fixed_width, session_row,
+        truncate_end,
+    };
     use crate::agent::AgentKind;
     use crate::session::{SessionLocator, SessionSummary, SessionTimestamp};
     use chrono::{TimeZone, Utc};
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui::widgets::{List, Widget};
 
     #[test]
     fn limits_cwd_width_and_preserves_message_space() {
@@ -203,11 +231,83 @@ mod tests {
     }
 
     #[test]
+    fn sizes_agent_columns_for_all_agents_and_terminal_widths() {
+        let claude = session_for(AgentKind::Claude, "/work/project");
+        let codex = session_for(AgentKind::Codex, "/work/project");
+        let pi = session_for(AgentKind::Pi, "/work/project");
+        let sessions = [&claude, &codex, &pi];
+        let widest_agent = sessions
+            .iter()
+            .map(|session| display_width(&session.agent.to_string()))
+            .max()
+            .unwrap();
+        let reserved_width =
+            MARKER_WIDTH + AGENT_GAP_WIDTH + ELAPSED_WIDTH + MESSAGE_GAP_WIDTH + MIN_MESSAGE_WIDTH;
+        let boundary_width = reserved_width + widest_agent;
+        let layout = RowLayout::new(boundary_width, &sessions);
+        let agent_start = MARKER_WIDTH;
+        let agent_end = agent_start + widest_agent;
+        let gap_end = agent_end + AGENT_GAP_WIDTH;
+        let message_start = boundary_width - MIN_MESSAGE_WIDTH;
+
+        assert_eq!(layout.agent_width, widest_agent);
+        assert_eq!(layout.cwd_width, 0);
+        assert_eq!(layout.message_width(), MIN_MESSAGE_WIDTH);
+        for session in sessions {
+            let area = Rect::new(0, 0, boundary_width as u16, 1);
+            let mut buffer = Buffer::empty(area);
+            List::new([session_row(session, false, layout)]).render(area, &mut buffer);
+            let rendered = buffer
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+
+            assert_eq!(
+                &rendered[agent_start..agent_end],
+                fixed_width(&session.agent.to_string(), widest_agent)
+            );
+            assert_eq!(&rendered[agent_end..gap_end], " ".repeat(AGENT_GAP_WIDTH));
+            assert_ne!(&rendered[gap_end..gap_end + 1], " ");
+            assert_eq!(
+                &rendered[message_start..],
+                truncate_end(&session.first_message, MIN_MESSAGE_WIDTH)
+            );
+        }
+
+        let narrow_layout = RowLayout::new(boundary_width - 1, &sessions);
+
+        assert_eq!(narrow_layout.agent_width, widest_agent - 1);
+        assert_eq!(narrow_layout.cwd_width, 0);
+        assert_eq!(narrow_layout.message_width(), MIN_MESSAGE_WIDTH);
+    }
+
+    #[test]
     fn truncates_and_pads_display_text() {
         assert_eq!(truncate_end("abcdef", 5), "abc..");
         assert_eq!(truncate_end("first\nsecond", 8), "first ..");
         assert_eq!(truncate_end("abcdef", 2), "..");
         assert_eq!(fixed_width("abc", 5), "abc  ");
+    }
+
+    #[test]
+    fn renders_full_claude_code_agent_name() {
+        let session = session_for(AgentKind::Claude, "/work/project");
+        let area = Rect::new(0, 0, 80, 1);
+        let layout = RowLayout::new(area.width as usize, &[&session]);
+        let mut buffer = Buffer::empty(area);
+
+        List::new([session_row(&session, false, layout)]).render(area, &mut buffer);
+
+        let rendered = buffer
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(
+            rendered.contains("Claude Code"),
+            "rendered row: {rendered:?}"
+        );
     }
 
     #[test]
@@ -223,9 +323,13 @@ mod tests {
     use std::path::PathBuf;
 
     fn session(cwd: &str) -> SessionSummary {
+        session_for(AgentKind::Codex, cwd)
+    }
+
+    fn session_for(agent: AgentKind, cwd: &str) -> SessionSummary {
         SessionSummary {
             id: "session".to_string(),
-            agent: AgentKind::Codex,
+            agent,
             timestamp: SessionTimestamp::new("2026-07-13T01:00:00Z"),
             cwd: PathBuf::from(cwd),
             first_message: "First message".to_string(),
