@@ -11,6 +11,8 @@ const USER_ROLE: &str = "user";
 const ASSISTANT_ROLE: &str = "assistant";
 const COMMENTARY_BULLET: &str = "• ";
 const TOOL_CALL_MARKER: &str = "✳ ";
+const CODE_FENCE: &str = "```";
+const MIN_CODE_FENCE_LENGTH: usize = 3;
 const EMPTY_SESSION_MESSAGE: &str = "No readable user or assistant messages in this session.";
 const COMMENTARY_FOREGROUND: Color = Color::Gray;
 
@@ -155,9 +157,41 @@ fn edit_tool_lines(message: &SessionMessage) -> Vec<Line<'_>> {
     heading.style = style;
     let mut lines = vec![heading];
     for content in &message.tool_contents {
-        lines.extend(content.split('\n').map(|line| Line::styled(line, style)));
+        lines.extend(fenced_edit_content_lines(content, style));
     }
     lines
+}
+
+fn fenced_edit_content_lines(content: &str, style: Style) -> Vec<Line<'static>> {
+    let source_fence = source_code_fence(content);
+    let markdown = format!("{source_fence}\n{content}\n{source_fence}");
+    render_markdown(&markdown)
+        .lines
+        .into_iter()
+        .map(|line| Line {
+            style: style.patch(line.style),
+            alignment: line.alignment,
+            spans: line
+                .spans
+                .into_iter()
+                .map(|span| Span::styled(span.content.into_owned(), span.style))
+                .collect(),
+        })
+        .collect()
+}
+
+fn source_code_fence(content: &str) -> String {
+    let longest_backtick_run = content
+        .as_bytes()
+        .split(|byte| *byte != b'`')
+        .map(<[u8]>::len)
+        .max()
+        .unwrap_or_default();
+    if longest_backtick_run < MIN_CODE_FENCE_LENGTH {
+        return CODE_FENCE.to_string();
+    }
+
+    "`".repeat(longest_backtick_run.saturating_add(1))
 }
 
 fn message_text_lines(message: &SessionMessage) -> Vec<Line<'_>> {
@@ -190,7 +224,8 @@ fn provider_name(provider: &ProviderEnum) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        ASSISTANT_ROLE, COMMENTARY_FOREGROUND, EMPTY_SESSION_MESSAGE, session_message_lines,
+        ASSISTANT_ROLE, CODE_FENCE, COMMENTARY_FOREGROUND, EMPTY_SESSION_MESSAGE,
+        session_message_lines, source_code_fence,
     };
     use crate::agent::provider::ProviderEnum;
     use crate::agent::session::SessionMessage;
@@ -377,8 +412,20 @@ mod tests {
 
         assert_eq!(role_header_count(&rendered_lines, ASSISTANT_ROLE), 1);
         assert!(rendered_lines.iter().any(|line| line == "• Checking"));
-        assert!(rendered_lines.iter().any(|line| line == "✳ apply patch"));
-        assert!(rendered_lines.iter().any(|line| line == "+codex edit"));
+        let codex_heading_index = rendered_lines
+            .iter()
+            .position(|line| line == "✳ apply patch")
+            .unwrap();
+        assert_eq!(
+            &rendered_lines[codex_heading_index + 1..codex_heading_index + 6],
+            [
+                CODE_FENCE,
+                "*** Begin Patch",
+                "+codex edit",
+                "*** End Patch",
+                CODE_FENCE,
+            ]
+        );
         assert!(
             rendered_lines
                 .iter()
@@ -395,7 +442,15 @@ mod tests {
             .unwrap();
         assert_eq!(
             &rendered_lines[pi_heading_index + 1..pi_heading_index + 5],
-            ["local enabled = true", "", "", "return enabled"]
+            [CODE_FENCE, "local enabled = true", "", CODE_FENCE]
+        );
+        assert_eq!(
+            &rendered_lines[pi_heading_index + 5..pi_heading_index + 8],
+            [CODE_FENCE, "", CODE_FENCE]
+        );
+        assert_eq!(
+            &rendered_lines[pi_heading_index + 8..pi_heading_index + 11],
+            [CODE_FENCE, "return enabled", CODE_FENCE]
         );
 
         let path_span = lines
@@ -404,6 +459,13 @@ mod tests {
             .find(|span| span.content == PI_PATH)
             .unwrap();
         assert!(path_span.style.add_modifier.contains(Modifier::UNDERLINED));
+    }
+
+    #[test]
+    fn uses_a_source_fence_longer_than_edit_content_backticks() {
+        assert_eq!(source_code_fence("plain content"), CODE_FENCE);
+        assert_eq!(source_code_fence("before ``` after"), "````");
+        assert_eq!(source_code_fence("````\n```"), "`````");
     }
 
     #[test]
