@@ -257,7 +257,6 @@ const ASSISTANT_ROLE: &str = "assistant";
 const CODEX_COMMENTARY_PHASE: &str = "commentary";
 const COMMENTARY_BULLET: &str = "• ";
 const EMPTY_SESSION_MESSAGE: &str = "No readable user or assistant messages in this session.";
-const CODEX_ASSISTANT_BACKGROUND: Color = Color::DarkGray;
 const CODEX_COMMENTARY_FOREGROUND: Color = Color::Gray;
 
 fn session_message_lines(messages: &[SessionMessage]) -> Vec<Line<'_>> {
@@ -333,15 +332,11 @@ fn message_text_lines(message: &SessionMessage) -> Vec<Line<'_>> {
 }
 
 fn codex_assistant_text_style(message: &SessionMessage) -> Style {
-    if message.provider != ProviderEnum::Codex || message.role != ASSISTANT_ROLE {
+    if !is_codex_commentary(message) {
         return Style::default();
     }
 
-    if is_codex_commentary(message) {
-        return Style::default().fg(CODEX_COMMENTARY_FOREGROUND);
-    }
-
-    Style::default().bg(CODEX_ASSISTANT_BACKGROUND)
+    Style::default().fg(CODEX_COMMENTARY_FOREGROUND)
 }
 
 #[derive(Clone, Copy)]
@@ -488,8 +483,7 @@ fn leave_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::{
-        ASSISTANT_ROLE, CODEX_ASSISTANT_BACKGROUND, CODEX_COMMENTARY_FOREGROUND,
-        EMPTY_SESSION_MESSAGE, session_message_lines,
+        ASSISTANT_ROLE, CODEX_COMMENTARY_FOREGROUND, EMPTY_SESSION_MESSAGE, session_message_lines,
     };
     use crate::agent::provider::ProviderEnum;
     use crate::agent::session::SessionMessage;
@@ -503,7 +497,7 @@ mod tests {
             ts: "2026-07-13T01:00:00Z".to_string(),
             role: "assistant".to_string(),
             text: "A **bold** answer".to_string(),
-            phase: None,
+            phase: Some("final_answer".to_string()),
         }];
 
         let lines = session_message_lines(&messages);
@@ -512,7 +506,7 @@ mod tests {
         assert_eq!(lines[0].spans[0].content, "assistant");
         assert_eq!(lines[1].spans[0].content, "A ");
         assert_eq!(lines[1].spans[1].content, "bold");
-        assert_eq!(lines[1].style.bg, Some(CODEX_ASSISTANT_BACKGROUND));
+        assert!(lines[1].style.bg.is_none());
         assert!(
             lines[1].spans[1]
                 .style
