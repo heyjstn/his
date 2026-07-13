@@ -8,6 +8,8 @@
 </div>
 
 ### Overview
-His is a terminal application for browsing local coding-agent sessions and reading their message history. Claude Code, Codex, and Pi session files are currently supported.
+
+His is a terminal application for viewing and transforming sessions between your favorite coding agents. It currently
+supports Claude Code, Codex, and Pi.
 
 Work In Progress
