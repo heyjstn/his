@@ -20,10 +20,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: Linux
-            runner: ubuntu-latest
-          - name: macOS
-            runner: macos-latest
+          - name: Linux x86-64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - name: Linux ARM64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - name: macOS x86-64
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - name: macOS ARM64
+            runner: macos-15
+            target: aarch64-apple-darwin
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
 
@@ -33,7 +41,7 @@ jobs:
 
       - name: Install Rust toolchain
         run: |
-          rustup toolchain install stable --profile minimal
+          rustup toolchain install stable --profile minimal --target "${{ matrix.target }}"
           rustup default stable
 
       - name: Cache Cargo files
@@ -43,12 +51,12 @@ jobs:
             ~/.cargo/git
             ~/.cargo/registry
             target
-          key: ${{ runner.os }}-cargo-release-${{ hashFiles('Cargo.lock') }}
+          key: ${{ matrix.target }}-cargo-release-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-release-
+            ${{ matrix.target }}-cargo-release-
 
       - name: Build release binary
-        run: cargo build --release --locked
+        run: cargo build --release --locked --target "${{ matrix.target }}"
 
   checks:
     name: Format, lint, and test
