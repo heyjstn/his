@@ -1,4 +1,5 @@
 mod app;
+mod markdown;
 mod runtime;
 mod session_detail;
 mod session_list;
@@ -18,7 +19,7 @@ fn render(frame: &mut Frame, app: &App) {
     .areas(frame.area());
 
     let Some(session) = app.active_session() else {
-        session_list::render_header(frame, app.search(), app.error(), header);
+        session_list::render_header(frame, app.search(), app.notice(), header);
         session_list::render_sessions(frame, &app.visible_sessions(), app.selected(), body);
         session_list::render_footer(frame, footer);
         return;
@@ -27,7 +28,7 @@ fn render(frame: &mut Frame, app: &App) {
     session_detail::render_header(frame, session, header);
     session_detail::render_messages(
         frame,
-        session.messages.as_deref().unwrap_or_default(),
+        &session.messages,
         app.commentary_visible(),
         app.detail_scroll(),
         body,
@@ -39,10 +40,14 @@ fn render(frame: &mut Frame, app: &App) {
 mod tests {
     use super::{App, render};
     use crate::agent::AgentKind;
-    use crate::session::{Session, SessionMessage};
+    use crate::session::{
+        MessagePhase, MessageRole, SessionDetail, SessionLocator, SessionMessage, SessionSummary,
+        SessionTimestamp,
+    };
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
+    use std::path::PathBuf;
 
     const TERMINAL_WIDTH: u16 = 100;
     const TERMINAL_HEIGHT: u16 = 10;
@@ -50,7 +55,7 @@ mod tests {
     #[test]
     fn renders_session_list_components_in_their_layout_regions() {
         let mut terminal = test_terminal();
-        let app = App::new(vec![session(None)]);
+        let app = App::new(vec![summary()], None);
 
         terminal.draw(|frame| render(frame, &app)).unwrap();
 
@@ -63,11 +68,11 @@ mod tests {
     #[test]
     fn renders_session_detail_components_in_their_layout_regions() {
         let mut terminal = test_terminal();
-        let mut app = App::new(Vec::new());
-        app.show_session(session(Some(vec![
-            message("commentary", "Hidden commentary"),
-            message("final_answer", "Rendered answer"),
-        ])));
+        let mut app = App::new(Vec::new(), None);
+        app.show_session(detail(vec![
+            message(MessagePhase::Commentary, "Hidden commentary"),
+            message(MessagePhase::FinalAnswer, "Rendered answer"),
+        ]));
 
         terminal.draw(|frame| render(frame, &app)).unwrap();
 
@@ -90,25 +95,32 @@ mod tests {
         Terminal::new(TestBackend::new(TERMINAL_WIDTH, TERMINAL_HEIGHT)).unwrap()
     }
 
-    fn session(messages: Option<Vec<SessionMessage>>) -> Session {
-        Session {
+    fn summary() -> SessionSummary {
+        SessionSummary {
             id: "session".to_string(),
             agent: AgentKind::Codex,
-            ts: "2026-07-13T01:00:00Z".to_string(),
-            cwd: "/work/project".to_string(),
-            messages,
+            timestamp: SessionTimestamp::new("2026-07-13T01:00:00Z"),
+            cwd: PathBuf::from("/work/project"),
             first_message: "First message".to_string(),
+            locator: SessionLocator::new(PathBuf::from("/sessions/session.jsonl")),
         }
     }
 
-    fn message(phase: &str, text: &str) -> SessionMessage {
-        SessionMessage {
-            id: format!("{phase}-{text}"),
+    fn detail(messages: Vec<SessionMessage>) -> SessionDetail {
+        SessionDetail {
             agent: AgentKind::Codex,
-            ts: "2026-07-13T01:01:00Z".to_string(),
-            role: "assistant".to_string(),
+            timestamp: SessionTimestamp::new("2026-07-13T01:00:00Z"),
+            cwd: PathBuf::from("/work/project"),
+            messages,
+        }
+    }
+
+    fn message(phase: MessagePhase, text: &str) -> SessionMessage {
+        SessionMessage {
+            timestamp: SessionTimestamp::new("2026-07-13T01:01:00Z"),
+            role: MessageRole::Assistant,
             text: text.to_string(),
-            phase: Some(phase.to_string()),
+            phase: Some(phase),
             tool_path: None,
             tool_contents: Vec::new(),
         }

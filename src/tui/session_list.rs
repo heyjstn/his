@@ -1,5 +1,4 @@
-use crate::agent::AgentKind;
-use crate::session::Session;
+use crate::session::SessionSummary;
 use chrono::{DateTime, Utc};
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -41,7 +40,7 @@ pub(super) fn render_header(frame: &mut Frame, search: &str, error: Option<&str>
 
 pub(super) fn render_sessions(
     frame: &mut Frame,
-    sessions: &[&Session],
+    sessions: &[&SessionSummary],
     selected: usize,
     area: Rect,
 ) {
@@ -76,10 +75,10 @@ struct RowLayout {
 }
 
 impl RowLayout {
-    fn new(width: usize, sessions: &[&Session]) -> Self {
+    fn new(width: usize, sessions: &[&SessionSummary]) -> Self {
         let max_cwd_width = sessions
             .iter()
-            .map(|session| display_width(&session.cwd))
+            .map(|session| display_width(&session.cwd.to_string_lossy()))
             .max()
             .unwrap_or_default();
         let fixed_width =
@@ -98,7 +97,7 @@ impl RowLayout {
     }
 }
 
-fn session_row(session: &Session, selected: bool, layout: RowLayout) -> ListItem<'static> {
+fn session_row(session: &SessionSummary, selected: bool, layout: RowLayout) -> ListItem<'static> {
     let marker = if selected {
         SELECTED_MARKER
     } else {
@@ -112,13 +111,16 @@ fn session_row(session: &Session, selected: bool, layout: RowLayout) -> ListItem
     } else {
         Style::default().fg(Color::Gray)
     };
-    let cwd = fixed_width(&session.cwd, layout.cwd_width);
+    let cwd = fixed_width(&session.cwd.to_string_lossy(), layout.cwd_width);
     let first_message = truncate_end(&session.first_message, layout.message_width());
 
     ListItem::new(Line::from(vec![
         Span::raw(marker),
-        Span::styled(fixed_width(agent_name(&session.agent), AGENT_WIDTH), style),
-        Span::styled(fixed_width(&elapsed(&session.ts), ELAPSED_WIDTH), style),
+        Span::styled(fixed_width(&session.agent.to_string(), AGENT_WIDTH), style),
+        Span::styled(
+            fixed_width(&elapsed(session.timestamp.as_str()), ELAPSED_WIDTH),
+            style,
+        ),
         Span::styled(cwd, style),
         Span::styled(" ".repeat(MESSAGE_GAP_WIDTH), style),
         Span::styled(first_message, style),
@@ -163,13 +165,6 @@ fn display_width(value: &str) -> usize {
     Span::raw(value).width()
 }
 
-fn agent_name(agent: &AgentKind) -> &'static str {
-    match agent {
-        AgentKind::Codex => "Codex",
-        AgentKind::Pi => "Pi",
-    }
-}
-
 fn elapsed(timestamp: &str) -> String {
     elapsed_at(timestamp, Utc::now())
 }
@@ -195,7 +190,7 @@ fn elapsed_at(timestamp: &str, now: DateTime<Utc>) -> String {
 mod tests {
     use super::{MAX_CWD_WIDTH, RowLayout, elapsed_at, fixed_width, truncate_end};
     use crate::agent::AgentKind;
-    use crate::session::Session;
+    use crate::session::{SessionLocator, SessionSummary, SessionTimestamp};
     use chrono::{TimeZone, Utc};
 
     #[test]
@@ -225,14 +220,16 @@ mod tests {
         assert_eq!(elapsed_at("invalid", now), "invalid");
     }
 
-    fn session(cwd: &str) -> Session {
-        Session {
+    use std::path::PathBuf;
+
+    fn session(cwd: &str) -> SessionSummary {
+        SessionSummary {
             id: "session".to_string(),
             agent: AgentKind::Codex,
-            ts: "2026-07-13T01:00:00Z".to_string(),
-            cwd: cwd.to_string(),
-            messages: None,
+            timestamp: SessionTimestamp::new("2026-07-13T01:00:00Z"),
+            cwd: PathBuf::from(cwd),
             first_message: "First message".to_string(),
+            locator: SessionLocator::new(PathBuf::from("/sessions/session.jsonl")),
         }
     }
 }

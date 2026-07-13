@@ -1,5 +1,6 @@
 use crate::config;
-use crate::session::SessionRepository;
+use crate::repository::SessionRepository;
+use crate::session::SessionSummary;
 use crate::tui;
 use anyhow::{Result, anyhow};
 use clap::{Parser, Subcommand};
@@ -31,8 +32,7 @@ pub fn run() -> Result<ExitCode> {
     let cli = Cli::parse();
 
     let config = config::load(config_home(env::var_os(HIS_HOME_ENV))?)?;
-    let agents = config.agents.as_deref().unwrap_or_default();
-    let repository = SessionRepository::new(agents)?;
+    let repository = SessionRepository::new(config.agents)?;
 
     match cli.command {
         None => tui::run(&repository)?,
@@ -41,9 +41,27 @@ pub fn run() -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn list_sessions(repository: &SessionRepository<'_>) -> Result<()> {
-    println!("{:?}", repository.list_sessions()?);
+fn list_sessions(repository: &SessionRepository) -> Result<()> {
+    let catalog = repository.list_sessions();
+    for warning in &catalog.warnings {
+        eprintln!("warning: {warning}");
+    }
+    for session in &catalog.sessions {
+        println!("{}", session_summary_line(session));
+    }
     Ok(())
+}
+
+fn session_summary_line(session: &SessionSummary) -> String {
+    let first_message = session.first_message.replace(['\r', '\n'], " ");
+    format!(
+        "{}\t{}\t{}\t{}\t{}",
+        session.timestamp.as_str(),
+        session.agent,
+        session.id,
+        session.cwd.display(),
+        first_message
+    )
 }
 
 fn config_home(value: Option<OsString>) -> Result<PathBuf> {
@@ -55,7 +73,9 @@ fn config_home(value: Option<OsString>) -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::config_home;
+    use super::{config_home, session_summary_line};
+    use crate::agent::AgentKind;
+    use crate::session::{SessionLocator, SessionSummary, SessionTimestamp};
     use std::ffi::OsString;
     use std::path::PathBuf;
 
@@ -84,5 +104,25 @@ mod tests {
             format!("{error:#}"),
             "HIS_HOME must be set to a non-empty path"
         );
+    }
+
+    #[test]
+    fn formats_session_summaries_without_internal_locator_details() {
+        let summary = SessionSummary {
+            id: "session-id".to_string(),
+            agent: AgentKind::Codex,
+            timestamp: SessionTimestamp::new("2026-07-13T01:00:00Z"),
+            cwd: PathBuf::from("/work/project"),
+            first_message: "First\nmessage".to_string(),
+            locator: SessionLocator::new(PathBuf::from("/private/session.jsonl")),
+        };
+
+        let line = session_summary_line(&summary);
+
+        assert_eq!(
+            line,
+            "2026-07-13T01:00:00Z\tCodex\tsession-id\t/work/project\tFirst message"
+        );
+        assert!(!line.contains("/private/session.jsonl"));
     }
 }

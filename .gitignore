@@ -1,5 +1,6 @@
 /target/
-/tests/
+/tests/.codex/
+/tests/.pi/
 /.his/
 /his.iml
 /.idea/

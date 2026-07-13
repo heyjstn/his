@@ -1,21 +1,19 @@
-use crate::session::{Session, SessionRepository};
+use crate::session::{SessionDetail, SessionSummary};
 
 const LOAD_SESSION_ERROR_PREFIX: &str = "Unable to load session";
 
 pub(super) struct App {
-    sessions: Vec<Session>,
+    sessions: Vec<SessionSummary>,
     selected: usize,
     search: String,
-    active_session: Option<Session>,
+    active_session: Option<SessionDetail>,
     detail_scroll: u16,
     commentary_visible: bool,
-    error: Option<String>,
+    notice: Option<String>,
 }
 
 impl App {
-    pub(super) fn new(mut sessions: Vec<Session>) -> Self {
-        sessions.sort_by(|left, right| right.ts.cmp(&left.ts));
-
+    pub(super) fn new(sessions: Vec<SessionSummary>, notice: Option<String>) -> Self {
         Self {
             sessions,
             selected: 0,
@@ -23,11 +21,11 @@ impl App {
             active_session: None,
             detail_scroll: 0,
             commentary_visible: false,
-            error: None,
+            notice,
         }
     }
 
-    pub(super) fn visible_sessions(&self) -> Vec<&Session> {
+    pub(super) fn visible_sessions(&self) -> Vec<&SessionSummary> {
         if self.search.is_empty() {
             return self.sessions.iter().collect();
         }
@@ -35,8 +33,18 @@ impl App {
         let search = self.search.to_lowercase();
         self.sessions
             .iter()
-            .filter(|session| session.cwd.to_lowercase().contains(&search))
+            .filter(|session| {
+                session
+                    .cwd
+                    .to_string_lossy()
+                    .to_lowercase()
+                    .contains(&search)
+            })
             .collect()
+    }
+
+    pub(super) fn selected_session(&self) -> Option<&SessionSummary> {
+        self.visible_sessions().get(self.selected).copied()
     }
 
     pub(super) fn selected(&self) -> usize {
@@ -47,11 +55,11 @@ impl App {
         &self.search
     }
 
-    pub(super) fn error(&self) -> Option<&str> {
-        self.error.as_deref()
+    pub(super) fn notice(&self) -> Option<&str> {
+        self.notice.as_deref()
     }
 
-    pub(super) fn active_session(&self) -> Option<&Session> {
+    pub(super) fn active_session(&self) -> Option<&SessionDetail> {
         self.active_session.as_ref()
     }
 
@@ -83,28 +91,15 @@ impl App {
         }
     }
 
-    pub(super) fn open_selected(&mut self, repository: &SessionRepository<'_>) {
-        let selected = self
-            .visible_sessions()
-            .get(self.selected)
-            .map(|session| (session.agent, session.id.clone()));
-        let Some((agent, session_id)) = selected else {
-            return;
-        };
-
-        match repository.load_session(agent, &session_id) {
-            Ok(session) => self.show_session(session),
-            Err(error) => {
-                self.error = Some(format!("{LOAD_SESSION_ERROR_PREFIX}: {error:#}"));
-            }
-        }
-    }
-
-    pub(super) fn show_session(&mut self, session: Session) {
+    pub(super) fn show_session(&mut self, session: SessionDetail) {
         self.active_session = Some(session);
         self.detail_scroll = 0;
         self.commentary_visible = false;
-        self.error = None;
+        self.notice = None;
+    }
+
+    pub(super) fn show_load_error(&mut self, error: &anyhow::Error) {
+        self.notice = Some(format!("{LOAD_SESSION_ERROR_PREFIX}: {error:#}"));
     }
 
     pub(super) fn close_active_session(&mut self) {
@@ -132,26 +127,27 @@ impl App {
 
     fn reset_search_state(&mut self) {
         self.selected = 0;
-        self.error = None;
+        self.notice = None;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{App, LOAD_SESSION_ERROR_PREFIX};
-    use crate::agent::{Agent, AgentKind};
-    use crate::session::{Session, SessionRepository};
-    use std::fs;
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(0);
+    use crate::agent::AgentKind;
+    use crate::session::{SessionDetail, SessionLocator, SessionSummary, SessionTimestamp};
+    use anyhow::anyhow;
+    use std::path::PathBuf;
 
     #[test]
-    fn sorts_sessions_by_most_recent_first() {
-        let app = App::new(vec![
-            session("older", "/work/older", "2026-07-12T01:00:00Z"),
-            session("newer", "/work/newer", "2026-07-13T01:00:00Z"),
-        ]);
+    fn preserves_repository_order() {
+        let app = App::new(
+            vec![
+                summary("newer", "/work/newer", "2026-07-13T01:00:00Z"),
+                summary("older", "/work/older", "2026-07-12T01:00:00Z"),
+            ],
+            None,
+        );
 
         let visible = app.visible_sessions();
 
@@ -161,12 +157,14 @@ mod tests {
 
     #[test]
     fn filters_sessions_case_insensitively_and_resets_selection() {
-        let mut app = App::new(vec![
-            session("frontend", "/work/Frontend", "2026-07-13T01:00:00Z"),
-            session("backend", "/work/backend", "2026-07-12T01:00:00Z"),
-        ]);
+        let mut app = App::new(
+            vec![
+                summary("frontend", "/work/Frontend", "2026-07-13T01:00:00Z"),
+                summary("backend", "/work/backend", "2026-07-12T01:00:00Z"),
+            ],
+            Some("previous warning".to_string()),
+        );
         app.select_next();
-        app.error = Some("previous error".to_string());
 
         for character in "FRONT".chars() {
             app.append_search(character);
@@ -176,7 +174,7 @@ mod tests {
         assert_eq!(visible.len(), 1);
         assert_eq!(visible[0].id, "frontend");
         assert_eq!(app.selected(), 0);
-        assert_eq!(app.error(), None);
+        assert_eq!(app.notice(), None);
 
         app.remove_search_character();
         assert_eq!(app.search(), "FRON");
@@ -184,10 +182,13 @@ mod tests {
 
     #[test]
     fn keeps_selection_within_visible_sessions() {
-        let mut app = App::new(vec![
-            session("first", "/work/first", "2026-07-13T01:00:00Z"),
-            session("second", "/work/second", "2026-07-12T01:00:00Z"),
-        ]);
+        let mut app = App::new(
+            vec![
+                summary("first", "/work/first", "2026-07-13T01:00:00Z"),
+                summary("second", "/work/second", "2026-07-12T01:00:00Z"),
+            ],
+            None,
+        );
 
         app.select_next();
         app.select_next();
@@ -199,100 +200,51 @@ mod tests {
     }
 
     #[test]
-    fn scrolls_detail_safely_and_resets_when_closed() {
-        let mut app = App::new(Vec::new());
-        app.active_session = Some(session("active", "/work/active", "2026-07-13T01:00:00Z"));
+    fn manages_detail_state_without_repository_access() {
+        let mut app = App::new(Vec::new(), None);
+        app.show_session(detail("active"));
 
         app.scroll_detail_down(10);
         app.scroll_detail_up(3);
         assert_eq!(app.detail_scroll(), 7);
 
-        app.scroll_detail_up(20);
-        assert_eq!(app.detail_scroll(), 0);
-
-        app.scroll_detail_down(5);
-        app.scroll_detail_home();
-        assert_eq!(app.detail_scroll(), 0);
-
-        app.scroll_detail_down(5);
-        app.close_active_session();
-        assert!(app.active_session().is_none());
-        assert_eq!(app.detail_scroll(), 0);
-    }
-
-    #[test]
-    fn toggles_commentary_visibility_and_resets_it_for_each_session() {
-        let mut app = App::new(Vec::new());
-        app.show_session(session("first", "/work/first", "2026-07-13T01:00:00Z"));
-
-        assert!(!app.commentary_visible());
-
-        app.scroll_detail_down(5);
         app.toggle_commentary_visibility();
         assert!(app.commentary_visible());
         assert_eq!(app.detail_scroll(), 0);
 
-        app.show_session(session("second", "/work/second", "2026-07-13T02:00:00Z"));
+        app.close_active_session();
+        assert!(app.active_session().is_none());
+        assert_eq!(app.detail_scroll(), 0);
         assert!(!app.commentary_visible());
     }
 
     #[test]
     fn exposes_session_loading_errors() {
-        let mut app = App::new(vec![session(
-            "missing",
-            "/work/missing",
-            "2026-07-13T01:00:00Z",
-        )]);
-        let repository = SessionRepository::new(&[]).unwrap();
+        let mut app = App::new(Vec::new(), None);
 
-        app.open_selected(&repository);
+        app.show_load_error(&anyhow!("not found"));
 
-        assert!(app.error().unwrap().starts_with(LOAD_SESSION_ERROR_PREFIX));
+        assert!(app.notice().unwrap().starts_with(LOAD_SESSION_ERROR_PREFIX));
         assert!(app.active_session().is_none());
     }
 
-    #[test]
-    fn opens_the_selected_session() {
-        let directory = std::env::temp_dir().join(format!(
-            "his-tui-app-test-{}-{}",
-            std::process::id(),
-            NEXT_TEST_DIRECTORY.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir_all(&directory).unwrap();
-        fs::write(
-            directory.join("session.jsonl"),
-            concat!(
-                r#"{"type":"session","version":3,"id":"selected","timestamp":"2026-07-13T01:00:00Z","cwd":"/work/selected"}"#,
-                "\n",
-                r#"{"type":"message","id":"user","parentId":null,"timestamp":"2026-07-13T01:01:00Z","message":{"role":"user","content":[{"type":"text","text":"Hello"}],"timestamp":1}}"#,
-            ),
-        )
-        .unwrap();
-        let agents = [Agent {
-            kind: AgentKind::Pi,
-            dir: directory.to_string_lossy().into_owned(),
-        }];
-        let repository = SessionRepository::new(&agents).unwrap();
-        let mut app = App::new(vec![Session {
-            agent: AgentKind::Pi,
-            ..session("selected", "/work/selected", "2026-07-13T01:00:00Z")
-        }]);
-
-        app.open_selected(&repository);
-
-        assert_eq!(app.active_session().unwrap().id, "selected");
-        assert_eq!(app.error(), None);
-        fs::remove_dir_all(directory).unwrap();
-    }
-
-    fn session(id: &str, cwd: &str, timestamp: &str) -> Session {
-        Session {
+    fn summary(id: &str, cwd: &str, timestamp: &str) -> SessionSummary {
+        SessionSummary {
             id: id.to_string(),
             agent: AgentKind::Codex,
-            ts: timestamp.to_string(),
-            cwd: cwd.to_string(),
-            messages: None,
+            timestamp: SessionTimestamp::new(timestamp),
+            cwd: PathBuf::from(cwd),
             first_message: format!("First message for {id}"),
+            locator: SessionLocator::new(PathBuf::from(format!("/sessions/{id}.jsonl"))),
+        }
+    }
+
+    fn detail(id: &str) -> SessionDetail {
+        SessionDetail {
+            agent: AgentKind::Codex,
+            timestamp: SessionTimestamp::new("2026-07-13T01:00:00Z"),
+            cwd: PathBuf::from(format!("/work/{id}")),
+            messages: Vec::new(),
         }
     }
 }

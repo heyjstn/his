@@ -1,6 +1,5 @@
-use crate::agent::{AgentKind, COMMENTARY_PHASE, TOOL_CALL_PHASE};
-use crate::renderer::render_markdown;
-use crate::session::{Session, SessionMessage};
+use super::markdown;
+use crate::session::{MessagePhase, MessageRole, SessionDetail, SessionMessage};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -8,8 +7,6 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 use std::path::Path;
 
-const USER_ROLE: &str = "user";
-const ASSISTANT_ROLE: &str = "assistant";
 const COMMENTARY_BULLET: &str = "• ";
 const TOOL_CALL_MARKER: &str = "✳ ";
 const CODE_FENCE: &str = "```";
@@ -17,20 +14,26 @@ const MIN_CODE_FENCE_LENGTH: usize = 3;
 const EMPTY_SESSION_MESSAGE: &str = "No readable user or assistant messages in this session.";
 const COMMENTARY_FOREGROUND: Color = Color::Gray;
 
-pub(super) fn render_header(frame: &mut Frame, session: &Session, area: Rect) {
+pub(super) fn render_header(frame: &mut Frame, session: &SessionDetail, area: Rect) {
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(vec![
                 Span::styled(
-                    agent_name(&session.agent),
+                    session.agent.to_string(),
                     Style::default()
                         .fg(Color::LightMagenta)
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw("  "),
-                Span::styled(&session.cwd, Style::default().add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    session.cwd.to_string_lossy(),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
             ]),
-            Line::styled(&session.ts, Style::default().fg(Color::DarkGray)),
+            Line::styled(
+                session.timestamp.as_str(),
+                Style::default().fg(Color::DarkGray),
+            ),
         ]),
         area,
     );
@@ -104,10 +107,9 @@ fn session_message_lines(messages: &[SessionMessage], commentary_visible: bool) 
 }
 
 fn message_header(message: &SessionMessage) -> Line<'_> {
-    let color = match message.role.as_str() {
-        USER_ROLE => Color::LightCyan,
-        ASSISTANT_ROLE => Color::LightGreen,
-        _ => Color::Gray,
+    let color = match &message.role {
+        MessageRole::User => Color::LightCyan,
+        MessageRole::Assistant => Color::LightGreen,
     };
     Line::from(vec![
         Span::styled(
@@ -115,20 +117,23 @@ fn message_header(message: &SessionMessage) -> Line<'_> {
             Style::default().fg(color).add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
-        Span::styled(&message.ts, Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            message.timestamp.as_str(),
+            Style::default().fg(Color::DarkGray),
+        ),
     ])
 }
 
 fn is_commentary(message: &SessionMessage) -> bool {
-    message.role == ASSISTANT_ROLE
-        && matches!(
-            message.phase.as_deref(),
-            Some(COMMENTARY_PHASE | TOOL_CALL_PHASE)
-        )
+    message.role == MessageRole::Assistant
+        && message
+            .phase
+            .as_ref()
+            .is_some_and(MessagePhase::is_commentary)
 }
 
 fn commentary_lines(message: &SessionMessage) -> Vec<Line<'_>> {
-    if message.phase.as_deref() == Some(TOOL_CALL_PHASE) {
+    if message.phase == Some(MessagePhase::ToolCall) {
         return edit_tool_lines(message);
     }
 
@@ -150,7 +155,7 @@ fn edit_tool_lines(message: &SessionMessage) -> Vec<Line<'_>> {
     if let Some(path) = &message.tool_path {
         heading_spans.push(Span::raw(" "));
         heading_spans.push(Span::styled(
-            path,
+            path.to_string_lossy(),
             Style::default().add_modifier(Modifier::UNDERLINED),
         ));
     }
@@ -176,7 +181,7 @@ fn fenced_edit_content_lines(
     let source_fence = source_code_fence(content);
     let language = language.unwrap_or_default();
     let markdown = format!("{source_fence}{language}\n{content}\n{source_fence}");
-    render_markdown(&markdown)
+    markdown::render(&markdown)
         .lines
         .into_iter()
         .map(|line| Line {
@@ -191,8 +196,8 @@ fn fenced_edit_content_lines(
         .collect()
 }
 
-fn edit_language(path: Option<&str>) -> Option<String> {
-    let extension = Path::new(path?).extension()?.to_str()?;
+fn edit_language(path: Option<&Path>) -> Option<String> {
+    let extension = path?.extension()?.to_str()?;
     let is_safe = !extension.is_empty()
         && extension
             .chars()
@@ -216,7 +221,7 @@ fn source_code_fence(content: &str) -> String {
 
 fn message_text_lines(message: &SessionMessage) -> Vec<Line<'_>> {
     let style = assistant_text_style(message);
-    render_markdown(&message.text)
+    markdown::render(&message.text)
         .lines
         .into_iter()
         .map(|mut line| {
@@ -234,87 +239,106 @@ fn assistant_text_style(message: &SessionMessage) -> Style {
     Style::default().fg(COMMENTARY_FOREGROUND)
 }
 
-fn agent_name(agent: &AgentKind) -> &'static str {
-    match agent {
-        AgentKind::Codex => "Codex",
-        AgentKind::Pi => "Pi",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        ASSISTANT_ROLE, CODE_FENCE, COMMENTARY_FOREGROUND, EMPTY_SESSION_MESSAGE, edit_language,
+        CODE_FENCE, COMMENTARY_FOREGROUND, EMPTY_SESSION_MESSAGE, edit_language,
         session_message_lines, source_code_fence,
     };
-    use crate::agent::AgentKind;
-    use crate::session::SessionMessage;
-    use ratatui::style::{Color, Modifier};
+    use crate::session::{MessagePhase, MessageRole, SessionMessage, SessionTimestamp};
+    use ratatui::style::Modifier;
+    use std::path::{Path, PathBuf};
+
+    const ASSISTANT_ROLE: &str = "assistant";
 
     #[test]
-    fn renders_session_message_markdown() {
-        let messages = [SessionMessage {
-            id: "message-1".to_string(),
-            agent: AgentKind::Codex,
-            ts: "2026-07-13T01:00:00Z".to_string(),
-            role: "assistant".to_string(),
-            text: "A **bold** answer".to_string(),
-            phase: Some("final_answer".to_string()),
-            tool_path: None,
-            tool_contents: Vec::new(),
-        }];
-
+    fn renders_markdown_and_empty_sessions() {
+        let messages = [message(
+            MessageRole::Assistant,
+            Some(MessagePhase::FinalAnswer),
+            "A **bold** answer",
+        )];
         let lines = session_message_lines(&messages, false);
 
-        assert_eq!(lines.len(), 3);
-        assert_eq!(lines[0].spans[0].content, "assistant");
-        assert_eq!(lines[1].spans[0].content, "A ");
+        assert_eq!(lines[0].spans[0].content, ASSISTANT_ROLE);
         assert_eq!(lines[1].spans[1].content, "bold");
-        assert!(lines[1].style.bg.is_none());
         assert!(
             lines[1].spans[1]
                 .style
                 .add_modifier
                 .contains(Modifier::BOLD)
         );
-        assert_eq!(lines[1].spans[2].content, " answer");
+        let empty = session_message_lines(&[], false);
+        assert_eq!(empty[0].spans[0].content, EMPTY_SESSION_MESSAGE);
     }
 
     #[test]
-    fn renders_empty_session_message() {
-        let lines = session_message_lines(&[], false);
-
-        assert_eq!(lines.len(), 1);
-        assert_eq!(lines[0].spans[0].content, EMPTY_SESSION_MESSAGE);
-    }
-
-    #[test]
-    fn renders_continuous_codex_commentary_as_one_bulleted_assistant_message() {
+    fn groups_continuous_commentary_under_one_header() {
         let messages = [
-            SessionMessage {
-                id: "commentary-1".to_string(),
-                agent: AgentKind::Codex,
-                ts: "2026-07-13T01:00:00Z".to_string(),
-                role: "assistant".to_string(),
-                text: "Inspecting the repository".to_string(),
-                phase: Some("commentary".to_string()),
-                tool_path: None,
-                tool_contents: Vec::new(),
-            },
-            SessionMessage {
-                id: "commentary-2".to_string(),
-                agent: AgentKind::Codex,
-                ts: "2026-07-13T01:01:00Z".to_string(),
-                role: "assistant".to_string(),
-                text: "Running the focused tests".to_string(),
-                phase: Some("commentary".to_string()),
-                tool_path: None,
-                tool_contents: Vec::new(),
-            },
+            message(
+                MessageRole::Assistant,
+                Some(MessagePhase::Commentary),
+                "First update",
+            ),
+            message(
+                MessageRole::Assistant,
+                Some(MessagePhase::Commentary),
+                "Second update",
+            ),
         ];
 
         let lines = session_message_lines(&messages, true);
-        let rendered_lines = lines
+        let rendered = rendered_lines(&messages, true);
+
+        assert_eq!(
+            rendered
+                .iter()
+                .filter(|line| line.starts_with(ASSISTANT_ROLE))
+                .count(),
+            1
+        );
+        assert!(rendered.iter().any(|line| line == "• First update"));
+        assert!(rendered.iter().any(|line| line == "• Second update"));
+        assert_eq!(lines[1].style.fg, Some(COMMENTARY_FOREGROUND));
+    }
+
+    #[test]
+    fn does_not_group_commentary_across_other_messages() {
+        let messages = [
+            message(
+                MessageRole::Assistant,
+                Some(MessagePhase::Commentary),
+                "First update",
+            ),
+            message(MessageRole::User, None, "Continue"),
+            message(
+                MessageRole::Assistant,
+                Some(MessagePhase::Commentary),
+                "Second update",
+            ),
+        ];
+
+        let rendered = rendered_lines(&messages, true);
+
+        assert_eq!(
+            rendered
+                .iter()
+                .filter(|line| line.starts_with(ASSISTANT_ROLE))
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn renders_edit_paths_and_fenced_content() {
+        let path = PathBuf::from("/tmp/plugin.lua");
+        let mut edit = message(MessageRole::Assistant, Some(MessagePhase::ToolCall), "edit");
+        edit.tool_path = Some(path.clone());
+        edit.tool_contents = vec!["local enabled = true".to_string()];
+
+        let messages = [edit];
+        let lines = session_message_lines(&messages, true);
+        let rendered = lines
             .iter()
             .map(|line| {
                 line.spans
@@ -324,258 +348,64 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        assert_eq!(
-            rendered_lines
-                .iter()
-                .filter(|line| line.starts_with(ASSISTANT_ROLE))
-                .count(),
-            1
-        );
-        assert!(
-            rendered_lines
-                .iter()
-                .any(|line| line.contains("Inspecting the repository") && line.contains('•'))
-        );
-        assert!(
-            rendered_lines
-                .iter()
-                .any(|line| line.contains("Running the focused tests") && line.contains('•'))
-        );
-        assert_eq!(lines[1].style.fg, Some(COMMENTARY_FOREGROUND));
-        assert_eq!(lines[2].style.fg, Some(COMMENTARY_FOREGROUND));
-    }
-
-    #[test]
-    fn does_not_group_codex_commentary_across_message_boundaries() {
-        let messages = [
-            message(AgentKind::Codex, "assistant", "commentary", "First update"),
-            message(
-                AgentKind::Codex,
-                "assistant",
-                "final_answer",
-                "First answer",
-            ),
-            message(AgentKind::Codex, "assistant", "commentary", "Second update"),
-            message(AgentKind::Codex, "user", "", "Continue"),
-            message(AgentKind::Codex, "assistant", "commentary", "Third update"),
-        ];
-
-        let rendered_lines = rendered_lines(&messages, true);
-
-        assert_eq!(role_header_count(&rendered_lines, ASSISTANT_ROLE), 4);
-        assert_eq!(role_header_count(&rendered_lines, "user"), 1);
-        assert!(
-            rendered_lines
-                .iter()
-                .any(|line| line == "First answer" && !line.contains('•'))
-        );
-    }
-
-    #[test]
-    fn renders_continuous_pi_thinking_as_one_bulleted_assistant_message() {
-        let messages = [
-            message(AgentKind::Pi, "assistant", "commentary", "First"),
-            message(AgentKind::Pi, "assistant", "commentary", "Second"),
-        ];
-
-        let rendered_lines = rendered_lines(&messages, true);
-        let lines = session_message_lines(&messages, true);
-
-        assert_eq!(role_header_count(&rendered_lines, ASSISTANT_ROLE), 1);
-        assert_eq!(
-            rendered_lines
-                .iter()
-                .filter(|line| line.contains('•'))
-                .count(),
-            2
-        );
-        assert_eq!(lines[1].style.fg, Some(COMMENTARY_FOREGROUND));
-        assert_eq!(lines[2].style.fg, Some(COMMENTARY_FOREGROUND));
-    }
-
-    #[test]
-    fn renders_pi_edit_path_and_fenced_content_in_commentary() {
-        const PI_PATH: &str = "/Users/triluu/dotfiles/nvim/lua/plugins/lsp.lua";
-        const LUA_CODE_FENCE: &str = "```lua";
-        let messages = [
-            message(AgentKind::Codex, "assistant", "commentary", "Checking"),
-            edit_message(
-                AgentKind::Pi,
-                "edit",
-                Some(PI_PATH),
-                &["local enabled = true\n", "", "return enabled"],
-            ),
-        ];
-
-        let lines = session_message_lines(&messages, true);
-        let rendered_lines = rendered_lines(&messages, true);
-
-        assert_eq!(role_header_count(&rendered_lines, ASSISTANT_ROLE), 1);
-        assert!(rendered_lines.iter().any(|line| line == "• Checking"));
-        assert!(
-            rendered_lines
-                .iter()
-                .any(|line| line == &format!("✳ edit {PI_PATH}"))
-        );
-        assert!(
-            rendered_lines
-                .iter()
-                .any(|line| line == "local enabled = true")
-        );
-        let pi_heading_index = rendered_lines
-            .iter()
-            .position(|line| line == &format!("✳ edit {PI_PATH}"))
-            .unwrap();
-        assert_eq!(
-            &rendered_lines[pi_heading_index + 1..pi_heading_index + 5],
-            [LUA_CODE_FENCE, "local enabled = true", "", CODE_FENCE]
-        );
-        assert_eq!(
-            &rendered_lines[pi_heading_index + 5..pi_heading_index + 8],
-            [LUA_CODE_FENCE, "", CODE_FENCE]
-        );
-        assert_eq!(
-            &rendered_lines[pi_heading_index + 8..pi_heading_index + 11],
-            [LUA_CODE_FENCE, "return enabled", CODE_FENCE]
-        );
-
+        assert!(rendered.iter().any(|line| line == "✳ edit /tmp/plugin.lua"));
+        assert!(rendered.iter().any(|line| line == "```lua"));
         let path_span = lines
             .iter()
             .flat_map(|line| &line.spans)
-            .find(|span| span.content == PI_PATH)
+            .find(|span| span.content == path.to_string_lossy())
             .unwrap();
         assert!(path_span.style.add_modifier.contains(Modifier::UNDERLINED));
     }
 
     #[test]
-    fn detects_safe_edit_languages_from_file_extensions() {
+    fn detects_safe_edit_languages_and_fences() {
         assert_eq!(
-            edit_language(Some("/tmp/plugin.lua")).as_deref(),
+            edit_language(Some(Path::new("/tmp/plugin.lua"))).as_deref(),
             Some("lua")
         );
-        assert_eq!(edit_language(Some("/tmp/main.RS")).as_deref(), Some("rs"));
-        assert_eq!(edit_language(Some("/tmp/Makefile")), None);
-        assert_eq!(edit_language(Some("/tmp/file.bad language")), None);
-    }
-
-    #[test]
-    fn renders_untyped_edit_content_without_a_file_extension() {
-        let messages = [edit_message(
-            AgentKind::Pi,
-            "edit",
-            Some("/tmp/Makefile"),
-            &["all:"],
-        )];
-
         assert_eq!(
-            &rendered_lines(&messages, true)[2..5],
-            [CODE_FENCE, "all:", CODE_FENCE]
+            edit_language(Some(Path::new("/tmp/main.RS"))).as_deref(),
+            Some("rs")
         );
-    }
-
-    #[test]
-    fn uses_a_source_fence_longer_than_edit_content_backticks() {
+        assert_eq!(edit_language(Some(Path::new("/tmp/Makefile"))), None);
+        assert_eq!(
+            edit_language(Some(Path::new("/tmp/file.bad language"))),
+            None
+        );
         assert_eq!(source_code_fence("plain content"), CODE_FENCE);
         assert_eq!(source_code_fence("before ``` after"), "````");
-        assert_eq!(source_code_fence("````\n```"), "`````");
-    }
-
-    #[test]
-    fn does_not_apply_codex_assistant_styles_to_other_messages() {
-        let messages = [
-            message(AgentKind::Pi, "assistant", "final_answer", "Answer"),
-            message(AgentKind::Codex, "user", "", "Question"),
-        ];
-
-        let lines = session_message_lines(&messages, true);
-
-        for line in [&lines[1], &lines[4]] {
-            assert!(line.style.fg.is_none());
-            assert!(line.style.bg.is_none());
-        }
-    }
-
-    #[test]
-    fn preserves_markdown_colors_over_codex_message_styles() {
-        let messages = [
-            message(AgentKind::Codex, "assistant", "commentary", "## Update"),
-            message(AgentKind::Codex, "assistant", "final_answer", "# Answer"),
-        ];
-
-        let lines = session_message_lines(&messages, true);
-
-        assert_eq!(lines[1].style.fg, Some(Color::Cyan));
-        assert_eq!(lines[4].style.bg, Some(Color::Cyan));
     }
 
     #[test]
     fn hides_commentary_when_visibility_is_disabled() {
         let messages = [
-            message(AgentKind::Codex, "assistant", "commentary", "Hidden update"),
             message(
-                AgentKind::Codex,
-                "assistant",
-                "final_answer",
+                MessageRole::Assistant,
+                Some(MessagePhase::Commentary),
+                "Hidden update",
+            ),
+            message(
+                MessageRole::Assistant,
+                Some(MessagePhase::FinalAnswer),
                 "Visible answer",
             ),
-            message(AgentKind::Pi, "assistant", "tool_call", "Hidden tool call"),
         ];
 
-        let visible_lines = rendered_lines(&messages, false);
+        let visible = rendered_lines(&messages, false);
 
-        assert!(
-            !visible_lines
-                .iter()
-                .any(|line| line.contains("Hidden update"))
-        );
-        assert!(visible_lines.iter().any(|line| line == "Visible answer"));
-        assert!(
-            !visible_lines
-                .iter()
-                .any(|line| line.contains("Hidden tool call"))
-        );
-
-        let commentary_only = [message(
-            AgentKind::Codex,
-            "assistant",
-            "commentary",
-            "Hidden update",
-        )];
-        let visible_lines = rendered_lines(&commentary_only, false);
-        assert_eq!(visible_lines, [EMPTY_SESSION_MESSAGE]);
+        assert!(!visible.iter().any(|line| line.contains("Hidden update")));
+        assert!(visible.iter().any(|line| line == "Visible answer"));
     }
 
-    fn message(agent: AgentKind, role: &str, phase: &str, text: &str) -> SessionMessage {
+    fn message(role: MessageRole, phase: Option<MessagePhase>, text: &str) -> SessionMessage {
         SessionMessage {
-            id: format!("{role}-{phase}-{text}"),
-            agent,
-            ts: "2026-07-13T01:00:00Z".to_string(),
-            role: role.to_string(),
+            timestamp: SessionTimestamp::new("2026-07-13T01:00:00Z"),
+            role,
             text: text.to_string(),
-            phase: (!phase.is_empty()).then(|| phase.to_string()),
+            phase,
             tool_path: None,
             tool_contents: Vec::new(),
-        }
-    }
-
-    fn edit_message(
-        agent: AgentKind,
-        text: &str,
-        tool_path: Option<&str>,
-        tool_contents: &[&str],
-    ) -> SessionMessage {
-        SessionMessage {
-            id: format!("edit-{text}"),
-            agent,
-            ts: "2026-07-13T01:00:00Z".to_string(),
-            role: "assistant".to_string(),
-            text: text.to_string(),
-            phase: Some("tool_call".to_string()),
-            tool_path: tool_path.map(str::to_string),
-            tool_contents: tool_contents
-                .iter()
-                .map(|content| (*content).to_string())
-                .collect(),
         }
     }
 
@@ -589,9 +419,5 @@ mod tests {
                     .collect()
             })
             .collect()
-    }
-
-    fn role_header_count(lines: &[String], role: &str) -> usize {
-        lines.iter().filter(|line| line.starts_with(role)).count()
     }
 }

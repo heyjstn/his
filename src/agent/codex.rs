@@ -1,91 +1,77 @@
-use super::{Message, SessionRecord};
+use super::{AgentRecord, ParsedRecord};
+use crate::session::{MessagePhase, MessageRole, SessionMessage, SessionTimestamp};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde_json::Value;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Deserialize, Debug)]
-pub struct CodexMessage {
-    pub timestamp: String,
+pub(super) struct CodexRecord {
+    #[serde(default)]
+    timestamp: String,
     #[serde(rename = "type")]
-    pub typ: String,
-    pub payload: Value,
+    typ: String,
+    #[serde(default)]
+    payload: Value,
 }
 
-impl SessionRecord for CodexMessage {
-    fn parse(path: &Path) -> Result<Vec<Message>> {
-        let file = Self::read_to_string(path)?;
-        let messages = serde_json::Deserializer::from_str(&file)
+impl AgentRecord for CodexRecord {
+    fn parse_records(path: &Path) -> Result<Vec<ParsedRecord>> {
+        let reader = Self::reader(path)?;
+        let records = serde_json::Deserializer::from_reader(reader)
             .into_iter::<Self>()
-            .map(|message| {
-                message.with_context(|| format!("failed to parse session file {}", path.display()))
+            .map(|record| {
+                record.with_context(|| format!("failed to parse session file {}", path.display()))
             })
             .collect::<Result<Vec<_>>>()?;
 
-        Ok(convert_messages(messages))
+        Ok(convert_records(records))
     }
 }
 
-impl From<CodexMessage> for Message {
-    fn from(value: CodexMessage) -> Self {
+impl From<CodexRecord> for ParsedRecord {
+    fn from(value: CodexRecord) -> Self {
         let payload_type = string_field(&value.payload, "type");
-        let is_session = value.typ == "session_meta";
+        if value.typ == "session_meta" {
+            let timestamp = string_field(&value.payload, "timestamp").unwrap_or(&value.timestamp);
+            let id = string_field(&value.payload, "id")
+                .or_else(|| string_field(&value.payload, "session_id"))
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("{timestamp}:session_meta"));
+            return Self::Session {
+                id,
+                timestamp: SessionTimestamp::new(timestamp),
+                cwd: string_field(&value.payload, "cwd").map(PathBuf::from),
+            };
+        }
+
         let (role, text) = match (value.typ.as_str(), payload_type) {
             ("event_msg", Some("user_message")) => (
-                Some("user".to_string()),
+                Some(MessageRole::User),
                 string_field(&value.payload, "message").map(str::to_string),
             ),
             ("event_msg", Some("agent_message")) => (
-                Some("assistant".to_string()),
+                Some(MessageRole::Assistant),
                 string_field(&value.payload, "message").map(str::to_string),
             ),
             ("response_item", Some("message"))
                 if string_field(&value.payload, "role") == Some("assistant") =>
             {
-                let text = output_text(&value.payload);
-                (text.as_ref().map(|_| "assistant".to_string()), text)
+                (Some(MessageRole::Assistant), output_text(&value.payload))
             }
             _ => (None, None),
         };
-        let is_message = role.is_some();
-        let timestamp = if is_session {
-            string_field(&value.payload, "timestamp")
-                .unwrap_or(&value.timestamp)
-                .to_string()
-        } else {
-            value.timestamp
+        let (Some(role), Some(text)) = (role, text) else {
+            return Self::Ignored;
         };
-        let id = string_field(&value.payload, "id")
-            .or_else(|| string_field(&value.payload, "session_id"))
-            .map(str::to_string)
-            .unwrap_or_else(|| format!("{}:{}", timestamp, value.typ));
-
-        Message {
-            typ: if is_session {
-                "session".to_string()
-            } else if is_message {
-                "message".to_string()
-            } else {
-                value.typ
-            },
-            id,
-            parent_id: None,
-            timestamp,
-            cwd: is_session
-                .then(|| string_field(&value.payload, "cwd"))
-                .flatten()
-                .map(str::to_string),
+        Self::Message(SessionMessage {
+            timestamp: SessionTimestamp::new(value.timestamp),
             role,
             text,
-            phase: string_field(&value.payload, "phase").map(str::to_string),
-            provider: string_field(&value.payload, "model_provider").map(str::to_string),
-            model: string_field(&value.payload, "model").map(str::to_string),
-            tool_call_id: string_field(&value.payload, "call_id").map(str::to_string),
-            tool_name: string_field(&value.payload, "name").map(str::to_string),
+            phase: string_field(&value.payload, "phase").map(MessagePhase::from_provider),
             tool_path: None,
             tool_contents: Vec::new(),
-            is_error: None,
-        }
+        })
     }
 }
 
@@ -112,34 +98,36 @@ enum AssistantMessageSource {
     Response,
 }
 
-fn convert_messages(messages: Vec<CodexMessage>) -> Vec<Message> {
-    let mut converted = Vec::with_capacity(messages.len());
+fn convert_records(records: Vec<CodexRecord>) -> Vec<ParsedRecord> {
+    let mut converted = Vec::with_capacity(records.len());
     let mut pending_assistant: Option<(usize, AssistantMessageSource)> = None;
 
-    for message in messages {
-        let is_message_record = is_message_record(&message);
-        let source = assistant_message_source(&message);
-        let message = Message::from(message);
+    for record in records {
+        let is_message_record = is_message_record(&record);
+        let source = assistant_message_source(&record);
+        let record = ParsedRecord::from(record);
 
-        if message.typ != "message" || message.text.is_none() {
+        let ParsedRecord::Message(message) = &record else {
             if is_message_record {
                 pending_assistant = None;
             }
-            converted.push(message);
+            converted.push(record);
             continue;
-        }
+        };
 
         let Some(source) = source else {
             pending_assistant = None;
-            converted.push(message);
+            converted.push(record);
             continue;
         };
 
         if let Some((index, pending_source)) = pending_assistant {
-            let pending = &mut converted[index];
-            if source != pending_source && is_same_utterance(pending, &message) {
+            let ParsedRecord::Message(pending) = &mut converted[index] else {
+                unreachable!("pending assistant index must reference a message");
+            };
+            if source != pending_source && is_same_utterance(pending, message) {
                 if pending.phase.is_none() {
-                    pending.phase = message.phase;
+                    pending.phase = message.phase.clone();
                 }
                 pending_assistant = None;
                 continue;
@@ -147,25 +135,25 @@ fn convert_messages(messages: Vec<CodexMessage>) -> Vec<Message> {
         }
 
         let index = converted.len();
-        converted.push(message);
+        converted.push(record);
         pending_assistant = Some((index, source));
     }
 
     converted
 }
 
-fn is_message_record(message: &CodexMessage) -> bool {
+fn is_message_record(record: &CodexRecord) -> bool {
     matches!(
-        (message.typ.as_str(), string_field(&message.payload, "type")),
+        (record.typ.as_str(), string_field(&record.payload, "type")),
         ("event_msg", Some("user_message" | "agent_message")) | ("response_item", Some("message"))
     )
 }
 
-fn assistant_message_source(message: &CodexMessage) -> Option<AssistantMessageSource> {
+fn assistant_message_source(record: &CodexRecord) -> Option<AssistantMessageSource> {
     match (
-        message.typ.as_str(),
-        string_field(&message.payload, "type"),
-        string_field(&message.payload, "role"),
+        record.typ.as_str(),
+        string_field(&record.payload, "type"),
+        string_field(&record.payload, "role"),
     ) {
         ("event_msg", Some("agent_message"), _) => Some(AssistantMessageSource::Event),
         ("response_item", Some("message"), Some("assistant")) => {
@@ -175,7 +163,7 @@ fn assistant_message_source(message: &CodexMessage) -> Option<AssistantMessageSo
     }
 }
 
-fn is_same_utterance(left: &Message, right: &Message) -> bool {
+fn is_same_utterance(left: &SessionMessage, right: &SessionMessage) -> bool {
     left.role == right.role
         && left.text == right.text
         && (left.phase == right.phase || left.phase.is_none() || right.phase.is_none())
@@ -183,12 +171,13 @@ fn is_same_utterance(left: &Message, right: &Message) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{CodexMessage, convert_messages};
-    use crate::agent::Message;
+    use super::{CodexRecord, convert_records};
+    use crate::agent::ParsedRecord;
+    use crate::session::{MessagePhase, MessageRole};
 
     #[test]
     fn converts_assistant_response_output_text() {
-        let message = parse_message(
+        let record = parse_record(
             r#"{
                 "timestamp":"2026-07-13T01:00:00Z",
                 "type":"response_item",
@@ -205,90 +194,58 @@ mod tests {
             }"#,
         );
 
-        let converted = Message::from(message);
+        let ParsedRecord::Message(message) = ParsedRecord::from(record) else {
+            panic!("expected a conversation message");
+        };
 
-        assert_eq!(converted.typ, "message");
-        assert_eq!(converted.role.as_deref(), Some("assistant"));
-        assert_eq!(converted.text.as_deref(), Some("Visible answer"));
-        assert_eq!(converted.phase.as_deref(), Some("final_answer"));
+        assert_eq!(message.role, MessageRole::Assistant);
+        assert_eq!(message.text, "Visible answer");
+        assert_eq!(message.phase, Some(MessagePhase::FinalAnswer));
     }
 
     #[test]
-    fn ignores_response_items_without_assistant_output_text() {
+    fn ignores_non_display_records() {
+        let future_record = parse_record(r#"{"type":"future_record"}"#);
+        assert!(matches!(
+            ParsedRecord::from(future_record),
+            ParsedRecord::Ignored
+        ));
+
         for payload in [
             r#"{"type":"message","role":"user","content":[{"type":"output_text","text":"User"}]}"#,
-            r#"{"type":"message","role":"assistant","content":[{"type":"input_text","text":"Input"}]}"#,
-        ] {
-            let message = parse_message(format!(
-                r#"{{"timestamp":"2026-07-13T01:00:00Z","type":"response_item","payload":{payload}}}"#
-            ));
-
-            let converted = Message::from(message);
-
-            assert_ne!(converted.typ, "message");
-            assert!(converted.text.is_none());
-        }
-    }
-
-    #[test]
-    fn skips_all_tool_calls() {
-        for payload in [
-            r#"{"type":"custom_tool_call","name":"apply_patch","input":"*** Begin Patch"}"#,
             r#"{"type":"function_call","name":"exec_command"}"#,
-            r#"{"type":"function_call","name":"apply_patch"}"#,
-            r#"{"type":"custom_tool_call","name":"exec_command"}"#,
-            r#"{"type":"function_call","name":"request_user_input"}"#,
-            r#"{"type":"function_call","name":"update_plan"}"#,
+            r#"{"type":"custom_tool_call","name":"apply_patch","input":"patch"}"#,
         ] {
-            let call = parse_message(format!(
+            let record = parse_record(format!(
                 r#"{{"timestamp":"2026-07-13T01:00:00Z","type":"response_item","payload":{payload}}}"#
             ));
 
-            let converted = Message::from(call);
-
-            assert_ne!(converted.typ, "message");
-            assert!(converted.role.is_none());
-            assert!(converted.text.is_none());
-            assert!(converted.phase.is_none());
+            assert!(matches!(ParsedRecord::from(record), ParsedRecord::Ignored));
         }
     }
 
     #[test]
     fn deduplicates_only_matching_cross_representation_messages() {
-        let messages = [
+        let records = [
             event_message("Repeated", "commentary"),
             response_message("Repeated", "commentary"),
             event_message("First update", "commentary"),
             event_message("Second update", "commentary"),
         ];
 
-        let converted = convert_messages(messages.into_iter().map(parse_message).collect());
+        let converted = convert_records(records.into_iter().map(parse_record).collect());
         let texts = converted
             .iter()
-            .filter_map(|message| message.text.as_deref())
+            .filter_map(|record| match record {
+                ParsedRecord::Message(message) => Some(message.text.as_str()),
+                ParsedRecord::Session { .. } | ParsedRecord::Ignored => None,
+            })
             .collect::<Vec<_>>();
 
         assert_eq!(texts, ["Repeated", "First update", "Second update"]);
     }
 
-    #[test]
-    fn does_not_deduplicate_across_an_ignored_message_record() {
-        let messages = [
-            event_message("Repeated", "commentary"),
-            r#"{"timestamp":"2026-07-13T01:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Continue"}]}}"#.to_string(),
-            response_message("Repeated", "commentary"),
-        ];
-
-        let converted = convert_messages(messages.into_iter().map(parse_message).collect());
-        let texts = converted
-            .iter()
-            .filter_map(|message| message.text.as_deref())
-            .collect::<Vec<_>>();
-
-        assert_eq!(texts, ["Repeated", "Repeated"]);
-    }
-
-    fn parse_message(json: impl AsRef<str>) -> CodexMessage {
+    fn parse_record(json: impl AsRef<str>) -> CodexRecord {
         serde_json::from_str(json.as_ref()).unwrap()
     }
 

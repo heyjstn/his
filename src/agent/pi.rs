@@ -1,383 +1,223 @@
-use super::{COMMENTARY_PHASE, Message, SessionRecord, TOOL_CALL_PHASE};
-use serde::{Deserialize, Serialize};
+use super::{AgentRecord, ParsedRecord};
+use crate::session::{MessagePhase, MessageRole, SessionMessage, SessionTimestamp};
+use serde::Deserialize;
 use serde_json::Value;
+use std::path::PathBuf;
 
-const THINKING_CONTENT_TYPE: &str = "thinking";
-const TOOL_CALL_CONTENT_TYPE: &str = "toolCall";
 const EDIT_TOOL: &str = "edit";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
-pub enum PiMessage {
+pub(super) enum PiRecord {
     #[serde(rename = "session")]
     Session(SessionInfo),
-    #[serde(rename = "model_change")]
-    ModelChange(ModelChangeEvent),
-    #[serde(rename = "thinking_level_change")]
-    ThinkingLevelChange(ThinkingLevelChangeEvent),
     #[serde(rename = "message")]
     Message(MessageEvent),
+    #[serde(other)]
+    Ignored,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
+pub(super) struct SessionInfo {
+    id: String,
+    timestamp: String,
+    cwd: PathBuf,
+}
+
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SessionInfo {
-    pub version: i64,
-    pub id: String,
-    pub timestamp: String,
-    pub cwd: String,
+pub(super) struct MessageEvent {
+    timestamp: String,
+    message: ConversationMessage,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ModelChangeEvent {
-    pub id: String,
-    pub parent_id: Option<String>,
-    pub timestamp: String,
-    pub provider: String,
-    pub model_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ThinkingLevelChangeEvent {
-    pub id: String,
-    pub parent_id: Option<String>,
-    pub timestamp: String,
-    pub thinking_level: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MessageEvent {
-    pub id: String,
-    pub parent_id: Option<String>,
-    pub timestamp: String,
-    pub message: ConversationMessage,
-}
-
-/// A conversation message, discriminated by `role`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(tag = "role")]
-pub enum ConversationMessage {
+enum ConversationMessage {
     #[serde(rename = "user")]
     User(UserMessage),
     #[serde(rename = "assistant")]
     Assistant(AssistantMessage),
-    #[serde(rename = "toolResult")]
-    ToolResult(ToolResultMessage),
+    #[serde(other)]
+    Ignored,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UserMessage {
-    pub content: Vec<ContentPart>,
-    pub timestamp: i64,
+#[derive(Debug, Deserialize)]
+struct UserMessage {
+    #[serde(default)]
+    content: Vec<ContentPart>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AssistantMessage {
-    pub content: Vec<ContentPart>,
-    pub api: String,
-    pub provider: String,
-    pub model: String,
-    pub usage: Usage,
-    pub stop_reason: String,
-    pub timestamp: i64,
-    pub response_id: String,
+#[derive(Debug, Deserialize)]
+struct AssistantMessage {
+    #[serde(default)]
+    content: Vec<ContentPart>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ToolResultMessage {
-    pub tool_call_id: String,
-    pub tool_name: String,
-    pub content: Vec<ContentPart>,
-    pub is_error: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub details: Option<ToolResultDetails>,
-    pub timestamp: i64,
-}
-
-/// A part of `message.content`, discriminated by `type`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type")]
-pub enum ContentPart {
+enum ContentPart {
     #[serde(rename = "text")]
     Text(TextContent),
     #[serde(rename = "thinking")]
     Thinking(ThinkingContent),
     #[serde(rename = "toolCall")]
     ToolCall(ToolCallContent),
+    #[serde(other)]
+    Ignored,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TextContent {
-    pub text: String,
+#[derive(Debug, Clone, Deserialize)]
+struct TextContent {
+    text: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ThinkingContent {
-    pub thinking: String,
-    pub thinking_signature: String,
+#[derive(Debug, Clone, Deserialize)]
+struct ThinkingContent {
+    thinking: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolCallContent {
-    pub id: String,
-    pub name: String,
-    /// Tool-specific args; shape depends on `name`.
-    /// Examples:
-    /// - bash: `{"command": "..."}`
-    /// - read: `{"path": "..."}`
-    /// - edit: `{"path": "...", "edits": [...]}`
-    pub arguments: Value,
+#[derive(Debug, Clone, Deserialize)]
+struct ToolCallContent {
+    name: String,
+    #[serde(default)]
+    arguments: Value,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Usage {
-    pub input: i64,
-    pub output: i64,
-    pub cache_read: i64,
-    pub cache_write: i64,
-    pub total_tokens: i64,
-    pub cost: Cost,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Cost {
-    pub input: f64,
-    pub output: f64,
-    pub cache_read: f64,
-    pub cache_write: f64,
-    pub total: f64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ToolResultDetails {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub diff: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub patch: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub first_changed_line: Option<i64>,
-}
-
-impl SessionRecord for PiMessage {
-    fn into_messages(self) -> Vec<Message> {
-        let PiMessage::Message(event) = &self else {
-            return vec![self.into()];
-        };
-        let ConversationMessage::Assistant(assistant) = &event.message else {
-            return vec![self.into()];
-        };
-        let thinking = content_thinking(&assistant.content);
-        let tool_calls = content_tool_calls(&assistant.content)
-            .filter(|tool_call| tool_call.name == EDIT_TOOL)
-            .cloned()
-            .collect::<Vec<_>>();
-
-        let mut message = Message::from(self);
-        message.tool_call_id = None;
-        message.tool_name = None;
-        let mut messages =
-            Vec::with_capacity(1 + tool_calls.len() + usize::from(message.text.is_some()));
-
-        if let Some(thinking) = thinking {
-            messages.push(Message {
-                id: format!("{}:{THINKING_CONTENT_TYPE}", message.id),
-                text: Some(thinking),
-                phase: Some(COMMENTARY_PHASE.to_string()),
-                ..message.clone()
-            });
+impl AgentRecord for PiRecord {
+    fn into_records(self) -> Vec<ParsedRecord> {
+        match self {
+            Self::Session(session) => vec![ParsedRecord::Session {
+                id: session.id,
+                timestamp: SessionTimestamp::new(session.timestamp),
+                cwd: Some(session.cwd),
+            }],
+            Self::Message(event) => event.into_records(),
+            Self::Ignored => vec![ParsedRecord::Ignored],
         }
-
-        messages.extend(tool_calls.into_iter().map(|tool_call| {
-            let tool_path = edit_path(&tool_call);
-            let tool_contents = edit_contents(&tool_call);
-            Message {
-                id: format!("{}:{TOOL_CALL_CONTENT_TYPE}:{}", message.id, tool_call.id),
-                text: Some(tool_call.name.clone()),
-                phase: Some(TOOL_CALL_PHASE.to_string()),
-                tool_call_id: Some(tool_call.id),
-                tool_name: Some(tool_call.name),
-                tool_path,
-                tool_contents,
-                ..message.clone()
-            }
-        }));
-
-        if message.text.is_some() {
-            messages.push(message);
-        }
-
-        messages
     }
 }
 
-impl From<PiMessage> for Message {
-    fn from(value: PiMessage) -> Self {
-        match value {
-            PiMessage::Session(event) => Message {
-                typ: "session".to_string(),
-                id: event.id,
-                parent_id: None,
-                timestamp: event.timestamp,
-                cwd: Some(event.cwd),
-                role: None,
-                text: None,
-                phase: None,
-                provider: None,
-                model: None,
-                tool_call_id: None,
-                tool_name: None,
-                tool_path: None,
-                tool_contents: Vec::new(),
-                is_error: None,
-            },
-            PiMessage::ModelChange(event) => Message {
-                typ: "model_change".to_string(),
-                id: event.id,
-                parent_id: event.parent_id,
-                timestamp: event.timestamp,
-                cwd: None,
-                role: None,
-                text: None,
-                phase: None,
-                provider: Some(event.provider),
-                model: Some(event.model_id),
-                tool_call_id: None,
-                tool_name: None,
-                tool_path: None,
-                tool_contents: Vec::new(),
-                is_error: None,
-            },
-            PiMessage::ThinkingLevelChange(event) => Message {
-                typ: "thinking_level_change".to_string(),
-                id: event.id,
-                parent_id: event.parent_id,
-                timestamp: event.timestamp,
-                cwd: None,
-                role: None,
-                text: Some(event.thinking_level),
-                phase: None,
-                provider: None,
-                model: None,
-                tool_call_id: None,
-                tool_name: None,
-                tool_path: None,
-                tool_contents: Vec::new(),
-                is_error: None,
-            },
-            PiMessage::Message(event) => {
-                let (role, text, provider, model, tool_call_id, tool_name, is_error) =
-                    match event.message {
-                        ConversationMessage::User(message) => (
-                            Some("user".to_string()),
-                            content_text(&message.content),
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                        ),
-                        ConversationMessage::Assistant(message) => {
-                            let tool_call = first_tool_call(&message.content);
-                            (
-                                Some("assistant".to_string()),
-                                content_text(&message.content),
-                                Some(message.provider),
-                                Some(message.model),
-                                tool_call.map(|tool_call| tool_call.id.clone()),
-                                tool_call.map(|tool_call| tool_call.name.clone()),
-                                None,
-                            )
-                        }
-                        ConversationMessage::ToolResult(message) => (
-                            Some("tool_result".to_string()),
-                            content_text(&message.content),
-                            None,
-                            None,
-                            Some(message.tool_call_id),
-                            Some(message.tool_name),
-                            Some(message.is_error),
-                        ),
-                    };
+impl From<PiRecord> for ParsedRecord {
+    fn from(record: PiRecord) -> Self {
+        record
+            .into_records()
+            .into_iter()
+            .next()
+            .unwrap_or(Self::Ignored)
+    }
+}
 
-                Message {
-                    typ: "message".to_string(),
-                    id: event.id,
-                    parent_id: event.parent_id,
-                    timestamp: event.timestamp,
-                    cwd: None,
-                    role,
-                    text,
-                    phase: None,
-                    provider,
-                    model,
-                    tool_call_id,
-                    tool_name,
-                    tool_path: None,
-                    tool_contents: Vec::new(),
-                    is_error,
-                }
+impl MessageEvent {
+    fn into_records(self) -> Vec<ParsedRecord> {
+        match self.message {
+            ConversationMessage::User(message) => content_text(&message.content)
+                .map(|text| {
+                    ParsedRecord::Message(SessionMessage {
+                        timestamp: SessionTimestamp::new(self.timestamp),
+                        role: MessageRole::User,
+                        text,
+                        phase: None,
+                        tool_path: None,
+                        tool_contents: Vec::new(),
+                    })
+                })
+                .into_iter()
+                .collect(),
+            ConversationMessage::Assistant(message) => {
+                Self::assistant_records(self.timestamp, message.content)
             }
+            ConversationMessage::Ignored => vec![ParsedRecord::Ignored],
         }
+    }
+
+    fn assistant_records(raw_timestamp: String, content: Vec<ContentPart>) -> Vec<ParsedRecord> {
+        let timestamp = SessionTimestamp::new(raw_timestamp);
+        let mut records = Vec::new();
+
+        if let Some(thinking) = content_thinking(&content) {
+            records.push(ParsedRecord::Message(SessionMessage {
+                timestamp: timestamp.clone(),
+                role: MessageRole::Assistant,
+                text: thinking,
+                phase: Some(MessagePhase::Commentary),
+                tool_path: None,
+                tool_contents: Vec::new(),
+            }));
+        }
+
+        records.extend(
+            content_tool_calls(&content)
+                .filter(|tool_call| tool_call.name == EDIT_TOOL)
+                .map(|tool_call| {
+                    ParsedRecord::Message(SessionMessage {
+                        timestamp: timestamp.clone(),
+                        role: MessageRole::Assistant,
+                        text: tool_call.name.clone(),
+                        phase: Some(MessagePhase::ToolCall),
+                        tool_path: edit_path(tool_call),
+                        tool_contents: edit_contents(tool_call),
+                    })
+                }),
+        );
+
+        if let Some(text) = content_text(&content) {
+            records.push(ParsedRecord::Message(SessionMessage {
+                timestamp,
+                role: MessageRole::Assistant,
+                text,
+                phase: None,
+                tool_path: None,
+                tool_contents: Vec::new(),
+            }));
+        }
+
+        if records.is_empty() {
+            records.push(ParsedRecord::Ignored);
+        }
+        records
     }
 }
 
 fn content_text(content: &[ContentPart]) -> Option<String> {
-    let text = content
-        .iter()
-        .filter_map(|part| match part {
-            ContentPart::Text(content) => Some(content.text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    if text.is_empty() { None } else { Some(text) }
+    joined_content(content, |part| match part {
+        ContentPart::Text(content) => Some(content.text.as_str()),
+        ContentPart::Thinking(_) | ContentPart::ToolCall(_) | ContentPart::Ignored => None,
+    })
 }
 
 fn content_thinking(content: &[ContentPart]) -> Option<String> {
-    let thinking = content
-        .iter()
-        .filter_map(|part| match part {
-            ContentPart::Thinking(content) => Some(content.thinking.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    if thinking.is_empty() {
-        None
-    } else {
-        Some(thinking)
-    }
+    joined_content(content, |part| match part {
+        ContentPart::Thinking(content) => Some(content.thinking.as_str()),
+        ContentPart::Text(_) | ContentPart::ToolCall(_) | ContentPart::Ignored => None,
+    })
 }
 
-fn first_tool_call(content: &[ContentPart]) -> Option<&ToolCallContent> {
-    content_tool_calls(content).next()
+fn joined_content<'a>(
+    content: &'a [ContentPart],
+    value: impl Fn(&'a ContentPart) -> Option<&'a str>,
+) -> Option<String> {
+    let joined = content
+        .iter()
+        .filter_map(value)
+        .collect::<Vec<_>>()
+        .join("\n");
+    (!joined.is_empty()).then_some(joined)
 }
 
 fn content_tool_calls(content: &[ContentPart]) -> impl Iterator<Item = &ToolCallContent> {
     content.iter().filter_map(|part| match part {
         ContentPart::ToolCall(content) => Some(content),
-        _ => None,
+        ContentPart::Text(_) | ContentPart::Thinking(_) | ContentPart::Ignored => None,
     })
 }
 
-fn edit_path(tool_call: &ToolCallContent) -> Option<String> {
+fn edit_path(tool_call: &ToolCallContent) -> Option<PathBuf> {
     tool_call
         .arguments
         .get("path")
         .and_then(Value::as_str)
-        .map(str::to_string)
+        .map(PathBuf::from)
 }
 
 fn edit_contents(tool_call: &ToolCallContent) -> Vec<String> {
@@ -394,37 +234,55 @@ fn edit_contents(tool_call: &ToolCallContent) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::PiMessage;
-    use crate::agent::{COMMENTARY_PHASE, SessionRecord, TOOL_CALL_PHASE};
+    use super::PiRecord;
+    use crate::agent::{AgentRecord, ParsedRecord};
+    use crate::session::MessagePhase;
 
     #[test]
-    fn converts_only_edit_tool_calls_to_commentary_messages() {
-        let message = serde_json::from_str::<PiMessage>(
-            r#"{"type":"message","id":"assistant-1","parentId":"user-1","timestamp":"2026-07-12T01:02:00Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Inspecting the repository","thinkingSignature":"signature"},{"type":"toolCall","id":"call-1","name":"read","arguments":{}},{"type":"toolCall","id":"call-2","name":"edit","arguments":{"path":"/tmp/first.lua","edits":[{"oldText":"old","newText":"first line\n"},{"oldText":"remove","newText":""},{"oldText":"before","newText":"second line"}]}},{"type":"toolCall","id":"call-3","name":"bash","arguments":{}},{"type":"toolCall","id":"call-4","name":"edit","arguments":{"path":"/tmp/second.lua","edits":[{"oldText":"before","newText":"after"}]}}],"api":"responses","provider":"test","model":"test-model","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"input":0.0,"output":0.0,"cacheRead":0.0,"cacheWrite":0.0,"total":0.0}},"stopReason":"toolUse","timestamp":2,"responseId":"response-1"}}"#,
+    fn converts_thinking_and_edit_calls_to_separate_messages() {
+        let record = serde_json::from_str::<PiRecord>(
+            r#"{"type":"message","id":"assistant-1","parentId":"user-1","timestamp":"2026-07-12T01:02:00Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Inspecting","thinkingSignature":"signature"},{"type":"toolCall","id":"call-1","name":"read","arguments":{}},{"type":"toolCall","id":"call-2","name":"edit","arguments":{"path":"/tmp/file.rs","edits":[{"oldText":"before","newText":"after"}]}},{"type":"text","text":"Done"}],"provider":"test","model":"test-model"}}"#,
         )
         .unwrap();
 
-        let converted = message.into_messages();
+        let converted = record.into_records();
 
         assert_eq!(converted.len(), 3);
+        let ParsedRecord::Message(thinking) = &converted[0] else {
+            panic!("expected thinking message");
+        };
+        assert_eq!(thinking.phase, Some(MessagePhase::Commentary));
+        let ParsedRecord::Message(edit) = &converted[1] else {
+            panic!("expected edit message");
+        };
+        assert_eq!(edit.phase, Some(MessagePhase::ToolCall));
         assert_eq!(
-            converted[0].text.as_deref(),
-            Some("Inspecting the repository")
+            edit.tool_path.as_deref(),
+            Some(std::path::Path::new("/tmp/file.rs"))
         );
-        assert_eq!(converted[0].phase.as_deref(), Some(COMMENTARY_PHASE));
-        assert_eq!(converted[0].tool_name, None);
-        assert_eq!(converted[1].text.as_deref(), Some("edit"));
-        assert_eq!(converted[1].phase.as_deref(), Some(TOOL_CALL_PHASE));
-        assert_eq!(converted[1].tool_call_id.as_deref(), Some("call-2"));
-        assert_eq!(converted[1].tool_path.as_deref(), Some("/tmp/first.lua"));
-        assert_eq!(
-            converted[1].tool_contents,
-            ["first line\n", "", "second line"]
-        );
-        assert_eq!(converted[2].text.as_deref(), Some("edit"));
-        assert_eq!(converted[2].phase.as_deref(), Some(TOOL_CALL_PHASE));
-        assert_eq!(converted[2].tool_call_id.as_deref(), Some("call-4"));
-        assert_eq!(converted[2].tool_path.as_deref(), Some("/tmp/second.lua"));
-        assert_eq!(converted[2].tool_contents, ["after"]);
+        assert_eq!(edit.tool_contents, ["after"]);
+        let ParsedRecord::Message(answer) = &converted[2] else {
+            panic!("expected answer message");
+        };
+        assert_eq!(answer.text, "Done");
+    }
+
+    #[test]
+    fn tolerates_unknown_record_and_content_types() {
+        let ignored = serde_json::from_str::<PiRecord>(
+            r#"{"type":"future_record","id":"future","payload":{}}"#,
+        )
+        .unwrap();
+        assert!(matches!(ignored, PiRecord::Ignored));
+
+        let record = serde_json::from_str::<PiRecord>(
+            r#"{"type":"message","id":"user-1","timestamp":"2026-07-12T01:02:00Z","message":{"role":"user","content":[{"type":"future_content","value":"ignored"},{"type":"text","text":"Visible"}]}}"#,
+        )
+        .unwrap();
+        let converted = record.into_records();
+        let ParsedRecord::Message(message) = &converted[0] else {
+            panic!("expected visible user message");
+        };
+        assert_eq!(message.text, "Visible");
     }
 }
