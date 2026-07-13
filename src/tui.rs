@@ -1,5 +1,4 @@
 mod app;
-mod markdown;
 mod runtime;
 mod session_detail;
 mod session_list;
