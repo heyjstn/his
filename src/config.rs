@@ -166,13 +166,13 @@ mod tests {
         )
         .unwrap();
 
-        let providers = config.providers.unwrap();
+        let agents = config.agents.unwrap();
         assert_eq!(
-            PathBuf::from(&providers[0].dir),
+            PathBuf::from(&agents[0].dir),
             PathBuf::from(TEST_PWD).join("tests/.pi/agent/sessions")
         );
         assert_eq!(
-            PathBuf::from(&providers[1].dir),
+            PathBuf::from(&agents[1].dir),
             PathBuf::from(TEST_HOME).join(".codex/sessions")
         );
     }
