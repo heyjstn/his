@@ -1,17 +1,17 @@
 use ratatui::text::Text;
 
-pub fn render_markdown(markdown: &str) -> Text<'_> {
+pub(super) fn render(markdown: &str) -> Text<'_> {
     tui_markdown::from_str(markdown)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::render_markdown;
+    use super::render;
     use ratatui::style::Modifier;
 
     #[test]
     fn renders_markdown_as_styled_terminal_text() {
-        let text = render_markdown("# Agent response\n\nUse **cargo test**.");
+        let text = render("# Agent response\n\nUse **cargo test**.");
 
         assert_eq!(text.lines.len(), 3);
         assert_eq!(text.lines[0].spans[0].content, "# ");

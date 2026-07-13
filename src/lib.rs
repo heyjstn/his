@@ -1,7 +1,8 @@
-pub mod agent;
+mod agent;
 mod cli;
 mod config;
-pub mod renderer;
+mod repository;
+mod session;
 mod tui;
 
 pub use cli::run;

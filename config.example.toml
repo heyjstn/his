@@ -1,0 +1,7 @@
+[[agents]]
+kind = "codex"
+dir = "$HOME/.codex/sessions"
+
+[[agents]]
+kind = "pi"
+dir = "$HOME/.pi/agent/sessions"

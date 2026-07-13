@@ -1,15 +1,35 @@
-use crate::agent::provider::Provider;
+use crate::agent::AgentKind;
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::env::{self, VarError};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const CONFIG_FILE_NAME: &str = "config.toml";
 
-#[derive(Deserialize, Debug)]
+#[derive(Debug)]
 pub(crate) struct Config {
-    pub(crate) providers: Option<Vec<Provider>>,
+    pub(crate) agents: Vec<AgentConfig>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct AgentConfig {
+    pub(crate) kind: AgentKind,
+    pub(crate) directory: PathBuf,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawConfig {
+    #[serde(default)]
+    agents: Vec<RawAgentConfig>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawAgentConfig {
+    kind: AgentKind,
+    dir: String,
 }
 
 pub(crate) fn load(directory: impl AsRef<Path>) -> Result<Config> {
@@ -27,20 +47,28 @@ fn from_toml_with_environment(
     data: &str,
     mut environment: impl FnMut(&str) -> std::result::Result<String, VarError>,
 ) -> Result<Config> {
-    let mut config: Config = toml::from_str(data).context("failed to parse config")?;
-    for provider in config.providers.iter_mut().flatten() {
-        provider.dir = shellexpand::env_with_context(&provider.dir, |variable| {
-            environment(variable).map(Some)
+    let raw: RawConfig = toml::from_str(data).context("failed to parse config")?;
+    let agents = raw
+        .agents
+        .into_iter()
+        .map(|agent| {
+            let directory = shellexpand::env_with_context(&agent.dir, |variable| {
+                environment(variable).map(Some)
+            })
+            .with_context(|| {
+                format!(
+                    "failed to resolve environment variables in agent directory {:?}",
+                    agent.dir
+                )
+            })?;
+            Ok(AgentConfig {
+                kind: agent.kind,
+                directory: PathBuf::from(directory.into_owned()),
+            })
         })
-        .with_context(|| {
-            format!(
-                "failed to resolve environment variables in provider directory {:?}",
-                provider.dir
-            )
-        })?
-        .into_owned();
-    }
-    Ok(config)
+        .collect::<Result<Vec<_>>>()?;
+
+    Ok(Config { agents })
 }
 
 #[cfg(test)]
@@ -54,43 +82,42 @@ mod tests {
     static NEXT_TEST_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
 
     #[test]
-    fn loads_config_from_config_toml() {
+    fn loads_agents_from_config_toml() {
         let directory = test_directory();
         let data = r#"
-            [[providers]]
-            name = "codex"
+            [[agents]]
+            kind = "codex"
             dir = "/tmp/.codex"
         "#;
         fs::write(directory.join(CONFIG_FILE_NAME), data).unwrap();
 
         let config = load(&directory).unwrap();
 
-        let providers = config.providers.unwrap();
-        assert_eq!(providers.len(), 1);
-        assert_eq!(providers[0].dir, "/tmp/.codex");
+        assert_eq!(config.agents.len(), 1);
+        assert_eq!(config.agents[0].directory, PathBuf::from("/tmp/.codex"));
         fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
-    fn defaults_to_no_providers() {
+    fn defaults_to_no_agents() {
         let config = from_toml("").unwrap();
 
-        assert!(config.providers.is_none());
+        assert!(config.agents.is_empty());
     }
 
     #[test]
-    fn resolves_environment_variables_in_provider_directories() {
+    fn resolves_environment_variables_in_agent_directories() {
         const TEST_HOME: &str = "/home/test-user";
         const TEST_PWD: &str = "/work/his";
 
         let config = from_toml_with_environment(
             r#"
-                [[providers]]
-                name = "pi"
+                [[agents]]
+                kind = "pi"
                 dir = "$PWD/tests/.pi/agent/sessions"
 
-                [[providers]]
-                name = "codex"
+                [[agents]]
+                kind = "codex"
                 dir = "$HOME/.codex/sessions"
             "#,
             |variable| match variable {
@@ -101,31 +128,30 @@ mod tests {
         )
         .unwrap();
 
-        let providers = config.providers.unwrap();
         assert_eq!(
-            PathBuf::from(&providers[0].dir),
+            config.agents[0].directory,
             PathBuf::from(TEST_PWD).join("tests/.pi/agent/sessions")
         );
         assert_eq!(
-            PathBuf::from(&providers[1].dir),
+            config.agents[1].directory,
             PathBuf::from(TEST_HOME).join(".codex/sessions")
         );
     }
 
     #[test]
-    fn rejects_undefined_environment_variables_in_provider_directories() {
+    fn rejects_undefined_environment_variables_in_agent_directories() {
         let error = from_toml_with_environment(
             r#"
-                [[providers]]
-                name = "pi"
-                dir = "$HIS_CONFIG_TEST_UNDEFINED_PROVIDER_DIRECTORY"
+                [[agents]]
+                kind = "pi"
+                dir = "$HIS_CONFIG_TEST_UNDEFINED_AGENT_DIRECTORY"
             "#,
             |_| Err(VarError::NotPresent),
         )
         .unwrap_err();
 
         assert!(format!("{error:#}").starts_with(
-            "failed to resolve environment variables in provider directory \"$HIS_CONFIG_TEST_UNDEFINED_PROVIDER_DIRECTORY\""
+            "failed to resolve environment variables in agent directory \"$HIS_CONFIG_TEST_UNDEFINED_AGENT_DIRECTORY\""
         ));
     }
 
@@ -144,7 +170,7 @@ mod tests {
         fs::remove_dir_all(directory).unwrap();
     }
 
-    fn test_directory() -> std::path::PathBuf {
+    fn test_directory() -> PathBuf {
         let sequence = NEXT_TEST_DIRECTORY.fetch_add(1, Ordering::Relaxed);
         let directory =
             std::env::temp_dir().join(format!("his-config-test-{}-{sequence}", std::process::id()));

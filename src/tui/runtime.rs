@@ -1,5 +1,5 @@
 use super::app::App;
-use crate::agent::session::SessionRepository;
+use crate::repository::SessionRepository;
 use anyhow::{Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::execute;
@@ -15,18 +15,37 @@ const PAGE_SCROLL_ROWS: u16 = 10;
 
 type TuiTerminal = Terminal<CrosstermBackend<Stdout>>;
 
-pub(crate) fn run(repository: &SessionRepository<'_>) -> Result<()> {
-    let mut app = App::new(repository.list_sessions()?);
-    let mut terminal = enter_terminal()?;
-    let result = run_app(&mut terminal, &mut app, repository);
-    leave_terminal(&mut terminal)?;
-    result
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Action {
+    None,
+    OpenSelected,
+    Quit,
+}
+
+pub(crate) fn run(repository: &SessionRepository) -> Result<()> {
+    let catalog = repository.list_sessions();
+    for warning in &catalog.warnings {
+        eprintln!("warning: {warning}");
+    }
+    let notice = catalog.warning_message();
+    let mut app = App::new(catalog.sessions, notice);
+    let mut terminal = TerminalGuard::enter()?;
+    let result = run_app(terminal.terminal(), &mut app, repository);
+    let restore_result = terminal.restore();
+
+    match result {
+        Ok(()) => restore_result,
+        Err(error) => {
+            let _ = restore_result;
+            Err(error)
+        }
+    }
 }
 
 fn run_app(
     terminal: &mut TuiTerminal,
     app: &mut App,
-    repository: &SessionRepository<'_>,
+    repository: &SessionRepository,
 ) -> Result<()> {
     loop {
         terminal
@@ -37,25 +56,27 @@ fn run_app(
             continue;
         };
 
-        if handle_key(app, repository, key) {
-            return Ok(());
+        match handle_key(app, key) {
+            Action::None => {}
+            Action::OpenSelected => open_selected(app, repository),
+            Action::Quit => return Ok(()),
         }
     }
 }
 
-fn handle_key(app: &mut App, repository: &SessionRepository<'_>, key: KeyEvent) -> bool {
+fn handle_key(app: &mut App, key: KeyEvent) -> Action {
     if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
-        return true;
+        return Action::Quit;
     }
 
     if app.active_session().is_some() {
         handle_detail_key(app, key);
-        return false;
+        return Action::None;
     }
 
     match key.code {
-        KeyCode::Esc => return true,
-        KeyCode::Enter => app.open_selected(repository),
+        KeyCode::Esc => return Action::Quit,
+        KeyCode::Enter => return Action::OpenSelected,
         KeyCode::Char(character) => app.append_search(character),
         KeyCode::Backspace => app.remove_search_character(),
         KeyCode::Up => app.select_previous(),
@@ -63,7 +84,21 @@ fn handle_key(app: &mut App, repository: &SessionRepository<'_>, key: KeyEvent) 
         _ => {}
     }
 
-    false
+    Action::None
+}
+
+fn open_selected(app: &mut App, repository: &SessionRepository) {
+    let result = app
+        .selected_session()
+        .map(|summary| repository.load_session(summary));
+    let Some(result) = result else {
+        return;
+    };
+
+    match result {
+        Ok(session) => app.show_session(session),
+        Err(error) => app.show_load_error(&error),
+    }
 }
 
 fn handle_detail_key(app: &mut App, key: KeyEvent) {
@@ -83,64 +118,208 @@ fn handle_detail_key(app: &mut App, key: KeyEvent) {
     }
 }
 
-fn enter_terminal() -> Result<TuiTerminal> {
-    enable_raw_mode().context("failed to enable terminal raw mode")?;
-    execute!(io::stdout(), EnterAlternateScreen)
-        .context("failed to enter the alternate terminal screen")?;
-    Terminal::new(CrosstermBackend::new(io::stdout())).context("failed to initialize the terminal")
+struct TerminalGuard {
+    terminal: TuiTerminal,
+    restoration: RestorationState,
 }
 
-fn leave_terminal(terminal: &mut TuiTerminal) -> Result<()> {
-    disable_raw_mode().context("failed to disable terminal raw mode")?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)
-        .context("failed to leave the alternate terminal screen")?;
-    terminal
-        .show_cursor()
-        .context("failed to restore the terminal cursor")
+impl TerminalGuard {
+    fn enter() -> Result<Self> {
+        enable_raw_mode().context("failed to enable terminal raw mode")?;
+        if let Err(error) = execute!(io::stdout(), EnterAlternateScreen) {
+            let _ = disable_raw_mode();
+            return Err(error).context("failed to enter the alternate terminal screen");
+        }
+
+        let terminal = match Terminal::new(CrosstermBackend::new(io::stdout())) {
+            Ok(terminal) => terminal,
+            Err(error) => {
+                let _ = disable_raw_mode();
+                let _ = execute!(io::stdout(), LeaveAlternateScreen);
+                return Err(error).context("failed to initialize the terminal");
+            }
+        };
+        Ok(Self {
+            terminal,
+            restoration: RestorationState::active(),
+        })
+    }
+
+    fn terminal(&mut self) -> &mut TuiTerminal {
+        &mut self.terminal
+    }
+
+    fn restore(&mut self) -> Result<()> {
+        self.restoration.restore(&mut CrosstermRestorer {
+            terminal: &mut self.terminal,
+        })
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        let _ = self.restore();
+    }
+}
+
+struct RestorationState {
+    raw_mode: bool,
+    alternate_screen: bool,
+    cursor: bool,
+}
+
+impl RestorationState {
+    fn active() -> Self {
+        Self {
+            raw_mode: true,
+            alternate_screen: true,
+            cursor: true,
+        }
+    }
+
+    fn restore(&mut self, operations: &mut impl RestoreOperations) -> Result<()> {
+        let mut first_error = None;
+        if self.raw_mode {
+            restore_operation(
+                &mut self.raw_mode,
+                operations.disable_raw_mode(),
+                &mut first_error,
+            );
+        }
+        if self.alternate_screen {
+            restore_operation(
+                &mut self.alternate_screen,
+                operations.leave_alternate_screen(),
+                &mut first_error,
+            );
+        }
+        if self.cursor {
+            restore_operation(&mut self.cursor, operations.show_cursor(), &mut first_error);
+        }
+
+        first_error.map_or(Ok(()), Err)
+    }
+}
+
+fn restore_operation(
+    active: &mut bool,
+    result: Result<()>,
+    first_error: &mut Option<anyhow::Error>,
+) {
+    match result {
+        Ok(()) => *active = false,
+        Err(error) if first_error.is_none() => *first_error = Some(error),
+        Err(_) => {}
+    }
+}
+
+trait RestoreOperations {
+    fn disable_raw_mode(&mut self) -> Result<()>;
+    fn leave_alternate_screen(&mut self) -> Result<()>;
+    fn show_cursor(&mut self) -> Result<()>;
+}
+
+struct CrosstermRestorer<'a> {
+    terminal: &'a mut TuiTerminal,
+}
+
+impl RestoreOperations for CrosstermRestorer<'_> {
+    fn disable_raw_mode(&mut self) -> Result<()> {
+        disable_raw_mode().context("failed to disable terminal raw mode")
+    }
+
+    fn leave_alternate_screen(&mut self) -> Result<()> {
+        execute!(self.terminal.backend_mut(), LeaveAlternateScreen)
+            .context("failed to leave the alternate terminal screen")
+    }
+
+    fn show_cursor(&mut self) -> Result<()> {
+        self.terminal
+            .show_cursor()
+            .context("failed to restore the terminal cursor")
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{PAGE_SCROLL_ROWS, handle_detail_key, handle_key};
-    use crate::agent::provider::ProviderEnum;
-    use crate::agent::session::{Session, SessionRepository};
+    use super::{
+        Action, PAGE_SCROLL_ROWS, RestorationState, RestoreOperations, handle_detail_key,
+        handle_key,
+    };
+    use crate::agent::AgentKind;
+    use crate::session::{SessionDetail, SessionTimestamp};
     use crate::tui::app::App;
+    use anyhow::{Result, anyhow};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use std::path::PathBuf;
 
     #[test]
-    fn exits_on_escape_or_control_c() {
-        let repository = SessionRepository::new(&[]).unwrap();
-        let mut app = App::new(Vec::new());
+    fn retries_only_terminal_restoration_operations_that_failed() {
+        let mut restoration = RestorationState::active();
+        let mut operations = FakeRestoreOperations {
+            fail_raw_mode: true,
+            ..FakeRestoreOperations::default()
+        };
 
-        assert!(handle_key(
-            &mut app,
-            &repository,
-            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-        ));
-        assert!(handle_key(
-            &mut app,
-            &repository,
-            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
-        ));
+        let error = restoration.restore(&mut operations).unwrap_err();
+
+        assert_eq!(error.to_string(), "raw mode failure");
+        assert!(restoration.raw_mode);
+        assert!(!restoration.alternate_screen);
+        assert!(!restoration.cursor);
+        assert_eq!(operations.calls, [1, 1, 1]);
+
+        operations.fail_raw_mode = false;
+        restoration.restore(&mut operations).unwrap();
+
+        assert!(!restoration.raw_mode);
+        assert_eq!(operations.calls, [2, 1, 1]);
+    }
+
+    #[test]
+    fn maps_escape_and_control_c_to_quit() {
+        let mut app = App::new(Vec::new(), None);
+
+        assert_eq!(
+            handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            Action::Quit
+        );
+        assert_eq!(
+            handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)
+            ),
+            Action::Quit
+        );
+    }
+
+    #[test]
+    fn maps_enter_to_an_effect_without_loading_a_session() {
+        let mut app = App::new(Vec::new(), None);
+
+        let action = handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(action, Action::OpenSelected);
+        assert!(app.active_session().is_none());
     }
 
     #[test]
     fn updates_search_from_character_and_backspace_keys() {
-        let repository = SessionRepository::new(&[]).unwrap();
-        let mut app = App::new(Vec::new());
+        let mut app = App::new(Vec::new(), None);
 
-        assert!(!handle_key(
-            &mut app,
-            &repository,
-            KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE),
-        ));
+        assert_eq!(
+            handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE)
+            ),
+            Action::None
+        );
         assert_eq!(app.search(), "h");
 
-        assert!(!handle_key(
+        handle_key(
             &mut app,
-            &repository,
             KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
-        ));
+        );
         assert!(app.search().is_empty());
     }
 
@@ -159,7 +338,7 @@ mod tests {
         ];
 
         for (key, initial_scroll, expected_scroll, closes_session) in cases {
-            let mut app = App::new(Vec::new());
+            let mut app = App::new(Vec::new(), None);
             app.show_session(session());
             app.scroll_detail_down(initial_scroll);
 
@@ -176,33 +355,54 @@ mod tests {
 
     #[test]
     fn control_o_toggles_commentary_visibility_in_session_detail() {
-        let repository = SessionRepository::new(&[]).unwrap();
-        let mut app = App::new(Vec::new());
+        let mut app = App::new(Vec::new(), None);
         app.show_session(session());
 
-        assert!(!handle_key(
+        handle_key(
             &mut app,
-            &repository,
             KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
-        ));
+        );
         assert!(app.commentary_visible());
 
-        assert!(!handle_key(
+        handle_key(
             &mut app,
-            &repository,
             KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
-        ));
+        );
         assert!(!app.commentary_visible());
     }
 
-    fn session() -> Session {
-        Session {
-            id: "session".to_string(),
-            provider: ProviderEnum::Codex,
-            ts: "2026-07-13T01:00:00Z".to_string(),
-            cwd: "/work/project".to_string(),
-            messages: None,
-            first_message: "First message".to_string(),
+    fn session() -> SessionDetail {
+        SessionDetail {
+            agent: AgentKind::Codex,
+            timestamp: SessionTimestamp::new("2026-07-13T01:00:00Z"),
+            cwd: PathBuf::from("/work/project"),
+            messages: Vec::new(),
+        }
+    }
+
+    #[derive(Default)]
+    struct FakeRestoreOperations {
+        fail_raw_mode: bool,
+        calls: [u8; 3],
+    }
+
+    impl RestoreOperations for FakeRestoreOperations {
+        fn disable_raw_mode(&mut self) -> Result<()> {
+            self.calls[0] += 1;
+            if self.fail_raw_mode {
+                return Err(anyhow!("raw mode failure"));
+            }
+            Ok(())
+        }
+
+        fn leave_alternate_screen(&mut self) -> Result<()> {
+            self.calls[1] += 1;
+            Ok(())
+        }
+
+        fn show_cursor(&mut self) -> Result<()> {
+            self.calls[2] += 1;
+            Ok(())
         }
     }
 }
