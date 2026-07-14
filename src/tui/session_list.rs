@@ -224,14 +224,6 @@ impl RowLayout {
     }
 }
 
-#[cfg(test)]
-fn session_list<'a>(
-    sessions: impl Iterator<Item = &'a SessionSummary>,
-    layout: RowLayout,
-) -> List<'static> {
-    session_list_at(sessions, layout, Utc::now()).0
-}
-
 fn session_list_at<'a>(
     sessions: impl Iterator<Item = &'a SessionSummary>,
     layout: RowLayout,
@@ -357,7 +349,7 @@ mod tests {
     use super::{
         AGENT_GAP_WIDTH, ELAPSED_WIDTH, MARKER_WIDTH, MAX_CWD_WIDTH, MESSAGE_GAP_WIDTH,
         MIN_MESSAGE_WIDTH, RowLayout, SessionListState, display_width, elapsed_at, fixed_width,
-        next_elapsed_change, render_sessions_at, session_list, truncate_end,
+        next_elapsed_change, render_sessions_at, session_list_at, truncate_end,
     };
     use crate::agent::AgentKind;
     use crate::session::{SessionLocator, SessionSummary, SessionTimestamp};
@@ -366,7 +358,7 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
-    use ratatui::widgets::{ListState, StatefulWidget};
+    use ratatui::widgets::{List, ListState, StatefulWidget};
     use std::time::Duration;
 
     #[test]
@@ -557,6 +549,13 @@ mod tests {
     }
 
     use std::path::PathBuf;
+
+    fn session_list<'a>(
+        sessions: impl Iterator<Item = &'a SessionSummary>,
+        layout: RowLayout,
+    ) -> List<'static> {
+        session_list_at(sessions, layout, Utc::now()).0
+    }
 
     fn session(cwd: &str) -> SessionSummary {
         session_for(AgentKind::Codex, cwd)

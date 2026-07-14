@@ -31,15 +31,6 @@ impl App {
         }
     }
 
-    #[cfg(test)]
-    pub(super) fn visible_sessions(
-        &self,
-    ) -> impl ExactSizeIterator<Item = &SessionSummary> + Clone {
-        self.visible_session_indices
-            .iter()
-            .map(|index| &self.sessions[*index])
-    }
-
     pub(super) fn session_list(
         &mut self,
     ) -> (
@@ -59,11 +50,6 @@ impl App {
         let selected = self.session_list_state.selected()?;
         let session_index = *self.visible_session_indices.get(selected)?;
         self.sessions.get(session_index)
-    }
-
-    #[cfg(test)]
-    pub(super) fn selected(&self) -> usize {
-        self.session_list_state.selected().unwrap_or_default()
     }
 
     #[cfg(test)]
@@ -241,7 +227,7 @@ mod tests {
 
     #[test]
     fn preserves_repository_order() {
-        let app = App::new(
+        let mut app = App::new(
             vec![
                 summary("newer", "/work/newer", "2026-07-13T01:00:00Z"),
                 summary("older", "/work/older", "2026-07-12T01:00:00Z"),
@@ -249,7 +235,7 @@ mod tests {
             None,
         );
 
-        let visible = app.visible_sessions().collect::<Vec<_>>();
+        let visible = visible_sessions(&mut app).collect::<Vec<_>>();
 
         assert_eq!(visible[0].id, "newer");
         assert_eq!(visible[1].id, "older");
@@ -271,10 +257,10 @@ mod tests {
             app.append_search(character);
         }
 
-        let visible = app.visible_sessions().collect::<Vec<_>>();
+        let visible = visible_sessions(&mut app).collect::<Vec<_>>();
         assert_eq!(visible.len(), 1);
         assert_eq!(visible[0].id, "message-match");
-        assert_eq!(app.selected(), 0);
+        assert_eq!(selected(&mut app), 0);
         assert!(!app.select_next());
         assert_eq!(app.selected_session().unwrap().id, "message-match");
         assert_eq!(app.notice(), None);
@@ -295,11 +281,21 @@ mod tests {
 
         assert!(app.select_next());
         assert!(!app.select_next());
-        assert_eq!(app.selected(), 1);
+        assert_eq!(selected(&mut app), 1);
 
         assert!(app.select_previous());
         assert!(!app.select_previous());
-        assert_eq!(app.selected(), 0);
+        assert_eq!(selected(&mut app), 0);
+    }
+
+    fn visible_sessions(
+        app: &mut App,
+    ) -> impl ExactSizeIterator<Item = &SessionSummary> + Clone + '_ {
+        app.session_list().0
+    }
+
+    fn selected(app: &mut App) -> usize {
+        app.session_list().1.selected().unwrap_or_default()
     }
 
     #[test]
