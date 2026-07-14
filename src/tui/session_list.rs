@@ -8,7 +8,7 @@ use ratatui::widgets::{List, ListItem, ListState, Paragraph};
 use std::time::Duration;
 
 const SEARCH_PLACEHOLDER: &str = "Type to search";
-const SELECTED_MARKER: &str = "> ";
+const SELECTED_MARKER: &str = "▸ ";
 const MARKER_WIDTH: usize = 2;
 const AGENT_GAP_WIDTH: usize = 2;
 const ELAPSED_WIDTH: usize = 9;
@@ -403,20 +403,20 @@ mod tests {
                 &mut buffer,
                 &mut state,
             );
-            let rendered = buffer
+            let cells: Vec<&str> = buffer
                 .content()
                 .iter()
                 .map(|cell| cell.symbol())
-                .collect::<String>();
+                .collect();
 
             assert_eq!(
-                &rendered[agent_start..agent_end],
+                cells[agent_start..agent_end].join(""),
                 fixed_width(&session.agent.to_string(), widest_agent)
             );
-            assert_eq!(&rendered[agent_end..gap_end], " ".repeat(AGENT_GAP_WIDTH));
-            assert_ne!(&rendered[gap_end..gap_end + 1], " ");
+            assert_eq!(cells[agent_end..gap_end].join(""), " ".repeat(AGENT_GAP_WIDTH));
+            assert_ne!(cells[gap_end], " ");
             assert_eq!(
-                &rendered[message_start..],
+                cells[message_start..].join(""),
                 truncate_end(&session.first_message, MIN_MESSAGE_WIDTH)
             );
         }

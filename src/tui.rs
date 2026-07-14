@@ -93,7 +93,7 @@ mod tests {
 
         let buffer = terminal.backend().buffer();
         assert!(!buffer_contains(buffer, "/work/project-0"));
-        assert!(buffer_row(buffer, 7).starts_with("> Codex"));
+        assert!(buffer_row(buffer, 7).starts_with("▸ Codex"));
         assert!(buffer_row(buffer, 7).contains("/work/project-7"));
         assert_eq!(app.session_list_cache_builds(), 1);
     }
