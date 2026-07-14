@@ -218,8 +218,7 @@ impl App {
                 .enumerate()
                 .filter_map(|(index, session)| {
                     session
-                        .cwd
-                        .to_string_lossy()
+                        .first_message
                         .to_lowercase()
                         .contains(&search)
                         .then_some(index)
@@ -257,30 +256,31 @@ mod tests {
     }
 
     #[test]
-    fn filters_sessions_case_insensitively_and_resets_selection() {
+    fn filters_sessions_by_first_message_case_insensitively_and_resets_selection() {
+        let mut cwd_match = summary("cwd-match", "/work/Needle", "2026-07-13T01:00:00Z");
+        cwd_match.first_message = "Unrelated task".to_string();
+        let mut message_match = summary("message-match", "/work/other", "2026-07-12T01:00:00Z");
+        message_match.first_message = "Find NEEDLE in the first message".to_string();
         let mut app = App::new(
-            vec![
-                summary("frontend", "/work/Frontend", "2026-07-13T01:00:00Z"),
-                summary("backend", "/work/backend", "2026-07-12T01:00:00Z"),
-            ],
+            vec![cwd_match, message_match],
             Some("previous warning".to_string()),
         );
         app.select_next();
 
-        for character in "FRONT".chars() {
+        for character in "needle".chars() {
             app.append_search(character);
         }
 
         let visible = app.visible_sessions().collect::<Vec<_>>();
         assert_eq!(visible.len(), 1);
-        assert_eq!(visible[0].id, "frontend");
+        assert_eq!(visible[0].id, "message-match");
         assert_eq!(app.selected(), 0);
         assert!(!app.select_next());
-        assert_eq!(app.selected_session().unwrap().id, "frontend");
+        assert_eq!(app.selected_session().unwrap().id, "message-match");
         assert_eq!(app.notice(), None);
 
         app.remove_search_character();
-        assert_eq!(app.search(), "FRON");
+        assert_eq!(app.search(), "needl");
     }
 
     #[test]

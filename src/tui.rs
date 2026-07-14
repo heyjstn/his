@@ -63,6 +63,7 @@ mod tests {
 
         let buffer = terminal.backend().buffer();
         assert!(buffer_row(buffer, 0).starts_with("Type to search"));
+        assert!(buffer_row(buffer, 0).contains("Filter: [Message]"));
         assert!(buffer_row(buffer, 2).contains("/work/project"));
         assert!(buffer_row(buffer, 8).starts_with("enter read"));
         let marker_style = buffer[(0, 2)].style();

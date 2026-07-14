@@ -84,7 +84,7 @@ pub(super) fn render_header(frame: &mut Frame, search: &str, error: Option<&str>
     let mut lines = vec![Line::from(vec![
         search,
         Span::raw("    Filter: "),
-        Span::styled("[Cwd]", Style::default().fg(Color::LightMagenta)),
+        Span::styled("[Message]", Style::default().fg(Color::LightMagenta)),
         Span::raw(" All    Sort: "),
         Span::styled("[Updated]", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw(" Created"),
