@@ -20,6 +20,7 @@ enum Action {
     None,
     OpenSelected,
     Quit,
+    Redraw,
 }
 
 pub(crate) fn run(repository: &SessionRepository) -> Result<()> {
@@ -47,20 +48,41 @@ fn run_app(
     app: &mut App,
     repository: &SessionRepository,
 ) -> Result<()> {
+    let mut redraw = true;
     loop {
-        terminal
-            .draw(|frame| super::render(frame, app))
-            .context("failed to draw the terminal UI")?;
-
-        let Event::Key(key) = event::read().context("failed to read terminal input")? else {
-            continue;
-        };
-
-        match handle_key(app, key) {
-            Action::None => {}
-            Action::OpenSelected => open_selected(app, repository),
-            Action::Quit => return Ok(()),
+        if redraw {
+            terminal
+                .draw(|frame| super::render(frame, app))
+                .context("failed to draw the terminal UI")?;
+            redraw = false;
         }
+
+        match wait_for_action(app)? {
+            Action::None => {}
+            Action::OpenSelected => redraw = open_selected(app, repository),
+            Action::Quit => return Ok(()),
+            Action::Redraw => redraw = true,
+        }
+    }
+}
+
+fn wait_for_action(app: &mut App) -> Result<Action> {
+    if let Some(timeout) = app.session_list_refresh_timeout() {
+        let event_ready = event::poll(timeout).context("failed to poll terminal input")?;
+        if !event_ready {
+            return Ok(Action::Redraw);
+        }
+    }
+
+    let event = event::read().context("failed to read terminal input")?;
+    Ok(handle_event(app, event))
+}
+
+fn handle_event(app: &mut App, event: Event) -> Action {
+    match event {
+        Event::Key(key) => handle_key(app, key),
+        Event::Resize(_, _) => Action::Redraw,
+        _ => Action::None,
     }
 }
 
@@ -70,52 +92,59 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
     }
 
     if app.active_session().is_some() {
-        handle_detail_key(app, key);
-        return Action::None;
+        return handle_detail_key(app, key);
     }
 
     match key.code {
-        KeyCode::Esc => return Action::Quit,
-        KeyCode::Enter => return Action::OpenSelected,
-        KeyCode::Char(character) => app.append_search(character),
-        KeyCode::Backspace => app.remove_search_character(),
-        KeyCode::Up => app.select_previous(),
-        KeyCode::Down => app.select_next(),
-        _ => {}
+        KeyCode::Esc => Action::Quit,
+        KeyCode::Enter => Action::OpenSelected,
+        KeyCode::Char(character) => redraw_if(app.append_search(character)),
+        KeyCode::Backspace => redraw_if(app.remove_search_character()),
+        KeyCode::Up => redraw_if(app.select_previous()),
+        KeyCode::Down => redraw_if(app.select_next()),
+        _ => Action::None,
     }
-
-    Action::None
 }
 
-fn open_selected(app: &mut App, repository: &SessionRepository) {
+fn open_selected(app: &mut App, repository: &SessionRepository) -> bool {
     let result = app
         .selected_session()
         .map(|summary| repository.load_session(summary));
     let Some(result) = result else {
-        return;
+        return false;
     };
 
     match result {
-        Ok(session) => app.show_session(session),
+        Ok(session) => {
+            app.show_session(session);
+            true
+        }
         Err(error) => app.show_load_error(&error),
     }
 }
 
-fn handle_detail_key(app: &mut App, key: KeyEvent) {
+fn handle_detail_key(app: &mut App, key: KeyEvent) -> Action {
     if key.code == KeyCode::Char('o') && key.modifiers.contains(KeyModifiers::CONTROL) {
-        app.toggle_commentary_visibility();
-        return;
+        return redraw_if(app.toggle_commentary_visibility());
     }
 
     match key.code {
-        KeyCode::Esc | KeyCode::Char('q') => app.close_active_session(),
-        KeyCode::Up | KeyCode::Char('k') => app.scroll_detail_up(LINE_SCROLL_ROWS),
-        KeyCode::Down | KeyCode::Char('j') => app.scroll_detail_down(LINE_SCROLL_ROWS),
-        KeyCode::PageUp => app.scroll_detail_up(PAGE_SCROLL_ROWS),
-        KeyCode::PageDown => app.scroll_detail_down(PAGE_SCROLL_ROWS),
-        KeyCode::Home => app.scroll_detail_home(),
-        _ => {}
+        KeyCode::Esc | KeyCode::Char('q') => redraw_if(app.close_active_session()),
+        KeyCode::Up | KeyCode::Char('k') => redraw_if(app.scroll_detail_up(LINE_SCROLL_ROWS)),
+        KeyCode::Down | KeyCode::Char('j') => redraw_if(app.scroll_detail_down(LINE_SCROLL_ROWS)),
+        KeyCode::PageUp => redraw_if(app.scroll_detail_up(PAGE_SCROLL_ROWS)),
+        KeyCode::PageDown => redraw_if(app.scroll_detail_down(PAGE_SCROLL_ROWS)),
+        KeyCode::Home => redraw_if(app.scroll_detail_home()),
+        _ => Action::None,
     }
+}
+
+fn redraw_if(changed: bool) -> Action {
+    if changed {
+        return Action::Redraw;
+    }
+
+    Action::None
 }
 
 struct TerminalGuard {
@@ -244,13 +273,13 @@ impl RestoreOperations for CrosstermRestorer<'_> {
 mod tests {
     use super::{
         Action, PAGE_SCROLL_ROWS, RestorationState, RestoreOperations, handle_detail_key,
-        handle_key,
+        handle_event, handle_key,
     };
     use crate::agent::AgentKind;
     use crate::session::{SessionDetail, SessionTimestamp};
     use crate::tui::app::App;
     use anyhow::{Result, anyhow};
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
     use std::path::PathBuf;
 
     #[test]
@@ -312,15 +341,39 @@ mod tests {
                 &mut app,
                 KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE)
             ),
-            Action::None
+            Action::Redraw
         );
         assert_eq!(app.search(), "h");
 
-        handle_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+        assert_eq!(
+            handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+            ),
+            Action::Redraw
         );
         assert!(app.search().is_empty());
+        assert_eq!(
+            handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+            ),
+            Action::None
+        );
+    }
+
+    #[test]
+    fn redraws_for_resize_but_not_for_no_op_navigation() {
+        let mut app = App::new(Vec::new(), None);
+
+        assert_eq!(
+            handle_event(&mut app, Event::Resize(100, 30)),
+            Action::Redraw
+        );
+        assert_eq!(
+            handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+            Action::None
+        );
     }
 
     #[test]
@@ -342,8 +395,9 @@ mod tests {
             app.show_session(session());
             app.scroll_detail_down(initial_scroll);
 
-            handle_detail_key(&mut app, KeyEvent::new(key, KeyModifiers::NONE));
+            let action = handle_detail_key(&mut app, KeyEvent::new(key, KeyModifiers::NONE));
 
+            assert_eq!(action, Action::Redraw, "key: {key:?}");
             assert_eq!(app.detail_scroll(), expected_scroll, "key: {key:?}");
             assert_eq!(
                 app.active_session().is_none(),
@@ -351,6 +405,13 @@ mod tests {
                 "key: {key:?}"
             );
         }
+
+        let mut app = App::new(Vec::new(), None);
+        app.show_session(session());
+        assert_eq!(
+            handle_detail_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),),
+            Action::None
+        );
     }
 
     #[test]
@@ -358,15 +419,21 @@ mod tests {
         let mut app = App::new(Vec::new(), None);
         app.show_session(session());
 
-        handle_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
+        assert_eq!(
+            handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
+            ),
+            Action::Redraw
         );
         assert!(app.commentary_visible());
 
-        handle_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
+        assert_eq!(
+            handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
+            ),
+            Action::Redraw
         );
         assert!(!app.commentary_visible());
     }
